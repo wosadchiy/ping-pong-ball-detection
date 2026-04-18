@@ -1,0 +1,12 @@
+{
+    "h_min": 23,
+    "h_max": 49,
+    "s_min": 132,
+    "s_max": 255,
+    "v_min": 81,
+    "v_max": 255,
+    "exposure": -5,
+    "gain": 122,
+    "brightness": 30,
+    "kp": 1.8
+}
