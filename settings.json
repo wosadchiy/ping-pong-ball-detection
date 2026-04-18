@@ -1,4 +1,5 @@
 {
+    "camera_id": 0,
     "h_min": 23,
     "h_max": 49,
     "s_min": 132,
@@ -8,6 +9,7 @@
     "exposure": -5,
     "gain": 122,
     "brightness": 30,
-    "kp": 0.3,
-    "is_tracking": false
+    "kp": 0.49,
+    "is_tracking": false,
+    "max_omega": 100.0
 }
