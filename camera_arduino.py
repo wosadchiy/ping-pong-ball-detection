@@ -9,98 +9,80 @@ import os
 from threading import Thread
 
 # -----------------------------
-# CONFIG STORE (The "State")
+# CONFIG STORE
 # -----------------------------
 class ConfigStore:
     def __init__(self, filepath="settings.json"):
         self.filepath = filepath
-        
-        # Default values (Initial State)
         self.h_min, self.h_max = 20, 50
         self.s_min, self.s_max = 100, 255
         self.v_min, self.v_max = 50, 255
         self.exposure = -5
         self.gain = 100
         self.brightness = 30
-        self.kp = 1.5
+        self.kp = 1.0
+        self.is_tracking = False  # New tracking signal
         
-        # Runtime flags
         self.hw_changed = False
-        
-        # Load saved data on initialization
         self.load_from_json()
 
     def save_to_json(self, *args):
-        """Dumps current state to a JSON file."""
-        # We only save detection, hardware, and logic parameters
         data = {
             "h_min": self.h_min, "h_max": self.h_max,
             "s_min": self.s_min, "s_max": self.s_max,
             "v_min": self.v_min, "v_max": self.v_max,
-            "exposure": self.exposure,
-            "gain": self.gain,
-            "brightness": self.brightness,
-            "kp": self.kp
+            "exposure": self.exposure, "gain": self.gain,
+            "brightness": self.brightness, "kp": self.kp,
+            "is_tracking": self.is_tracking
         }
         try:
             with open(self.filepath, 'w') as f:
                 json.dump(data, f, indent=4)
-            print(f"Settings successfully saved to {self.filepath}")
+            print("Settings saved.")
         except Exception as e:
-            print(f"Error saving settings: {e}")
+            print(f"Save error: {e}")
 
     def load_from_json(self):
-        """Loads data from JSON and updates the instance attributes."""
         if os.path.exists(self.filepath):
             try:
                 with open(self.filepath, 'r') as f:
                     data = json.load(f)
-                    # Update attributes using dict.update logic
                     for key, value in data.items():
-                        if hasattr(self, key):
-                            setattr(self, key, value)
-                print(f"Settings loaded from {self.filepath}")
-            except Exception as e:
-                print(f"Error loading settings: {e}")
-        else:
-            print("No settings file found. Using default values.")
+                        if hasattr(self, key): setattr(self, key, value)
+            except: pass
 
     def update_hw(self, key, value):
-        """Internal setter for hardware params to flag hardware update."""
         setattr(self, key, value)
         self.hw_changed = True
 
-# Initialize store
 store = ConfigStore()
 
 # -----------------------------
-# SETTINGS UI (The "View")
+# SETTINGS UI
 # -----------------------------
 def on_save_trigger(val):
-    """Callback for the 'Save' trackbar."""
     if val == 1:
         store.save_to_json()
-        # Reset trackbar to 0 after saving
         cv2.setTrackbarPos("SAVE SETTINGS", "Settings", 0)
 
 def create_settings_ui():
     cv2.namedWindow("Settings", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Settings", 400, 700)
+    cv2.resizeWindow("Settings", 400, 750)
     
-    # 1. Save Trigger (Acts as a button)
     cv2.createTrackbar("SAVE SETTINGS", "Settings", 0, 1, on_save_trigger)
     
-    # 2. HSV Sliders
+    # Trackbar for "is_tracking" signal (0 - OFF, 1 - ON)
+    cv2.createTrackbar("FOLLOW BALL", "Settings", int(store.is_tracking), 1, 
+                       lambda v: setattr(store, 'is_tracking', bool(v)))
+    
     cv2.createTrackbar("H Min", "Settings", store.h_min, 179, lambda v: setattr(store, 'h_min', v))
     cv2.createTrackbar("H Max", "Settings", store.h_max, 179, lambda v: setattr(store, 'h_max', v))
     cv2.createTrackbar("S Min", "Settings", store.s_min, 255, lambda v: setattr(store, 's_min', v))
     cv2.createTrackbar("V Min", "Settings", store.v_min, 255, lambda v: setattr(store, 'v_min', v))
     
-    # 3. Hardware Sliders (using update_hw to notify dispatcher)
     cv2.createTrackbar("Exposure", "Settings", abs(store.exposure), 13, lambda v: store.update_hw('exposure', -v))
     cv2.createTrackbar("Gain", "Settings", store.gain, 255, lambda v: store.update_hw('gain', v))
     
-    # 4. PID Controller
     cv2.createTrackbar("Kp x10", "Settings", int(store.kp * 10), 50, lambda v: setattr(store, 'kp', v / 10.0))
 
 # -----------------------------
@@ -162,9 +144,14 @@ if port:
 
 def ema(prev, new, a): return a * new + (1 - a) * prev
 
+# -----------------------------
+# SERIAL SEND (UPDATED PACKET)
+# -----------------------------
 def send_to_arduino(ax, ay, nx, ny):
     if SERIAL_ENABLED:
-        msg = f"{ax:.2f},{ay:.2f},{int(nx)},{int(ny)}\n"
+        # Format: angleX, angleY, normX, normY, Kp, isTracking
+        msg = f"{ax:.2f},{ay:.2f},{int(nx)},{int(ny)},{store.kp:.2f},{int(store.is_tracking)}\n"
+        ser.write(msg.encode())
         ser.write(msg.encode())
 
 # -----------------------------
