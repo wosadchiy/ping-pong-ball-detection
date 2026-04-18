@@ -1,0 +1,4 @@
+[tool.taskipy.tasks]
+clean = "echo [CLEAN] Starting cleanup... & (if exist dist (rd /s /q dist & echo [OK] Folder 'dist' deleted) else (echo [SKIP] Folder 'dist' not found)) & (if exist build (rd /s /q build & echo [OK] Folder 'build' deleted) else (echo [SKIP] Folder 'build' not found)) & (if exist *.spec (del /q *.spec & echo [OK] Spec files deleted) else (echo [SKIP] No spec files found)) & echo [CLEAN] Cleanup finished."
+dev = "python camera_arduino.py"
+build = "task clean && pyinstaller --noconfirm --onedir --windowed --name BallTrackerPro --clean --add-data \"settings.json;.\" camera_arduino.py && copy settings.json dist\\BallTrackerPro\\settings.json"
