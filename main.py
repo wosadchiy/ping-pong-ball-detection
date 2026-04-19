@@ -17,41 +17,42 @@ class SharedBuffer:
         self.frame = None
         self.mask = None
         self.logic_fps = 0
-        self.tracking_data = (0, 0, 0, 0)
         self.lock = Lock()
+        self.running = True  # Флаг для безопасного завершения потока
 
 shared = SharedBuffer()
 
 def logic_thread_func(store, detector, arduino, vs):
     """Поток вычислений: Детекция + Arduino"""
-    prev_time = time.time()
+    prev_time = time.perf_counter()
     fps_ema = 0
     
-    while True:
-        t_start = time.perf_counter()
-        
+    # Цикл работает, пока поднят флаг running
+    while shared.running:
         frame = vs.read()
         if frame is not None:
-            # 1. Основные расчеты (без UI задержек)
+            # 1. Основные расчеты
             res_frame, res_mask, data = detector.process(frame, store)
             
-            # 2. Передача в Arduino
+            # 2. Передача в Arduino (безопасно)
             arduino.send_data(*data, store)
             arduino.receive_data()
 
             # 3. Расчет Logic FPS
-            curr_time = time.time()
+            curr_time = time.perf_counter()
             fps_ema = ema(fps_ema, 1.0 / (curr_time - prev_time), 0.1)
             prev_time = curr_time
 
-            # 4. Копируем результат для UI (только ссылки, чтобы быстро)
+            # 4. Передаем результаты в буфер для отрисовки
             with shared.lock:
-                shared.frame = res_frame.copy()
-                shared.mask = res_mask.copy()
+                shared.frame = res_frame
+                shared.mask = res_mask
                 shared.logic_fps = int(fps_ema)
         
-        # Небольшая пауза, чтобы не раскалять CPU до 100% впустую
+        # Минимальная пауза, чтобы не блокировать другие потоки
         time.sleep(0.001)
+    
+    print("Logic thread gracefully stopped.")
 
 def main():
     store = ConfigStore()
@@ -59,47 +60,57 @@ def main():
     detector = BallDetector()
     vs = VideoStream(src=store.camera_id, store=store).start()
     
+    # Создаем интерфейс (vsync=False для максимальной производительности)
     create_ui(store)
     
-    # Запускаем "Мозги" в отдельном потоке
+    # Запускаем поток логики
     logic_thread = Thread(target=logic_thread_func, args=(store, detector, arduino, vs), daemon=True)
     logic_thread.start()
 
     show_mask = False
     
-    # Главный поток: ТОЛЬКО отрисовка интерфейса (Render Loop)
+    # Главный поток: Рендеринг интерфейса
     while dpg.is_dearpygui_running():
+        # Переключение маски клавишей M
         if dpg.is_key_pressed(dpg.mvKey_M):
             show_mask = not show_mask
             dpg.configure_item("mask_window", show=show_mask)
         
-        if dpg.is_key_pressed(dpg.mvKey_Q): break
+        # Выход клавишей Q
+        if dpg.is_key_pressed(dpg.mvKey_Q):
+            break
 
-        # Копируем данные из буфера логики для отрисовки
+        # Копируем данные из буфера логики
         with shared.lock:
             local_frame = shared.frame
             local_mask = shared.mask
             logic_fps = shared.logic_fps
 
         if local_frame is not None:
-            # Обновляем текст
-            dpg.set_value("ui_render_fps", f"Render FPS: {dpg.get_frame_rate()}")
+            # Обновляем статистику в UI
+            dpg.set_value("ui_render_fps", f"Render FPS: {dpg.get_frame_rate():.0f}")
             dpg.set_value("ui_logic_fps", f"Logic FPS: {logic_fps}")
-            dpg.set_value("ui_status", f"Status: {'TRACKING' if store.is_tracking else 'IDLE'}")
 
-            # Конвертация в RGBA (делаем в Main потоке, чтобы не тормозить Logic)
+            # Отрисовываем основную камеру
             rgba = cv2.cvtColor(local_frame, cv2.COLOR_BGR2RGBA)
             update_texture("camera_texture", rgba)
             
+            # Отрисовываем маску только если окно открыто
             if show_mask and local_mask is not None:
                 m_rgba = cv2.cvtColor(local_mask, cv2.COLOR_GRAY2RGBA)
                 update_texture("mask_texture", m_rgba)
 
         dpg.render_dearpygui_frame()
 
+    # --- ЗАВЕРШЕНИЕ РАБОТЫ ---
+    print("Initiating shutdown...")
+    shared.running = False  # Останавливаем поток логики
+    time.sleep(0.1)        # Даем время на выход из цикла
+    
     vs.stop()
     arduino.close()
     dpg.destroy_context()
+    print("Application closed.")
 
 if __name__ == "__main__":
     main()
