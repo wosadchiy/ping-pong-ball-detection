@@ -1,15 +1,16 @@
 {
+    "filepath": "D:\\_work\\vscode\\camera\\settings.json",
     "camera_id": 0,
-    "h_min": 23,
-    "h_max": 49,
-    "s_min": 132,
+    "h_min": 13,
+    "h_max": 35,
+    "s_min": 131,
     "s_max": 255,
-    "v_min": 81,
+    "v_min": 184,
     "v_max": 255,
     "exposure": -5,
     "gain": 122,
     "brightness": 30,
-    "kp": 0.49,
+    "kp": 0.39,
     "is_tracking": false,
-    "max_omega": 100.0
+    "max_omega": 40.0
 }
