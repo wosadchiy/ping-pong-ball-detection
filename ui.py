@@ -1,34 +1,43 @@
-import cv2
+import dearpygui.dearpygui as dpg
+import numpy as np
 
-def create_settings_ui(store):
-    win_name = "Settings"
-    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(win_name, 450, 850)
-    
-    # [GENERAL]
-    cv2.createTrackbar("SAVE SETTINGS", win_name, 0, 1, lambda v: (store.save_to_json() if v==1 else None, cv2.setTrackbarPos("SAVE SETTINGS", win_name, 0)))
-    cv2.createTrackbar("CAM ID", win_name, store.camera_id, 4, store.update_cam_id)
-    cv2.createTrackbar("FOLLOW BALL", win_name, int(store.is_tracking), 1, lambda v: setattr(store, 'is_tracking', bool(v)))
-    
-    # [CAMERA]
-    cv2.createTrackbar("H Min", win_name, store.h_min, 179, lambda v: setattr(store, 'h_min', v))
-    cv2.createTrackbar("H Max", win_name, store.h_max, 179, lambda v: setattr(store, 'h_max', v))
-    cv2.createTrackbar("S Min", win_name, store.s_min, 255, lambda v: setattr(store, 's_min', v))
-    cv2.createTrackbar("V Min", win_name, store.v_min, 255, lambda v: setattr(store, 'v_min', v))
-    cv2.createTrackbar("Exposure", win_name, abs(store.exposure), 13, lambda v: store.update_hw('exposure', -v))
-    
-    # [MOTOR]
-    cv2.createTrackbar("Kp x100", win_name, int(store.kp * 100), 500, lambda v: setattr(store, 'kp', v / 100.0))
-    cv2.createTrackbar("Max Speed", win_name, int(store.max_omega), 100, lambda v: setattr(store, 'max_omega', float(max(30, v))))
+def create_ui(store):
+    dpg.create_context()
 
-def is_window_closed(win_name):
-    return cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1
+    with dpg.texture_registry(show=False):
+        dpg.add_dynamic_texture(width=640, height=480, default_value=np.zeros((480, 640, 4)), tag="camera_texture")
+        dpg.add_dynamic_texture(width=640, height=480, default_value=np.zeros((480, 640, 4)), tag="mask_texture")
 
-def draw_info_overlay(frame, fps, store):
-    """Рисует данные (FPS, Kp и т.д.) прямо на кадре"""
-    h, w = frame.shape[:2]
-    info_text = f"FPS: {int(fps)} | Kp: {store.kp:.2f} | MaxV: {int(store.max_omega)}"
-    # Рисуем черную подложку для текста (чтобы было видно на любом фоне)
-    cv2.putText(frame, info_text, (11, h - 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-    # Рисуем сам текст
-    cv2.putText(frame, info_text, (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    with dpg.window(label="Dashboard", width=350, height=850, pos=[0, 0], no_close=True, no_move=True):
+        
+        with dpg.collapsing_header(label="STATISTICS", default_open=True):
+            dpg.add_text("Render FPS: 0", tag="ui_render_fps", color=[0, 255, 0])
+            dpg.add_text("Logic FPS: 0", tag="ui_logic_fps", color=[0, 255, 255])
+            dpg.add_text("Status: IDLE", tag="ui_status")
+        
+        with dpg.collapsing_header(label="COLOR SETTINGS (HSV)", default_open=True):
+            dpg.add_slider_int(label="H Min", min_value=0, max_value=179, default_value=store.h_min, callback=lambda s, v: setattr(store, 'h_min', v))
+            dpg.add_slider_int(label="H Max", min_value=0, max_value=179, default_value=store.h_max, callback=lambda s, v: setattr(store, 'h_max', v))
+            dpg.add_slider_int(label="S Min", min_value=0, max_value=255, default_value=store.s_min, callback=lambda s, v: setattr(store, 's_min', v))
+            dpg.add_slider_int(label="V Min", min_value=0, max_value=255, default_value=store.v_min, callback=lambda s, v: setattr(store, 'v_min', v))
+
+        with dpg.collapsing_header(label="MOTOR & APP", default_open=True):
+            dpg.add_checkbox(label="ENABLE TRACKING", default_value=store.is_tracking, callback=lambda s, v: setattr(store, 'is_tracking', v))
+            dpg.add_slider_float(label="Kp Factor", min_value=0.0, max_value=5.0, default_value=store.kp, callback=lambda s, v: setattr(store, 'kp', v))
+            dpg.add_slider_int(label="Max Speed", min_value=30, max_value=100, default_value=int(store.max_omega), callback=lambda s, v: setattr(store, 'max_omega', float(v)))
+            dpg.add_button(label="SAVE SETTINGS", width=-1, callback=store.save_to_json)
+
+    with dpg.window(label="Camera Feed", pos=[360, 0], no_close=True):
+        dpg.add_image("camera_texture")
+    with dpg.window(label="Mask Stream", tag="mask_window", pos=[360, 525], show=False):
+        dpg.add_image("mask_texture")
+
+    dpg.create_viewport(title='Ball Tracker Pro v3.0', width=1100, height=900, vsync=True) # VSync для экрана
+    dpg.setup_dearpygui()
+    dpg.show_viewport()
+
+INV_255 = 1.0 / 255.0
+
+def update_texture(tag, frame):
+    # Эта операция тяжелая, ее делаем только для экрана
+    dpg.set_value(tag, (frame.astype(np.float32) * INV_255).flatten())

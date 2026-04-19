@@ -16,12 +16,15 @@ class BallDetector:
         
         blurred = cv2.GaussianBlur(frame, (11, 11), 0)
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
-        lower = np.array([store.h_min, store.s_min, store.v_min])
-        upper = np.array([store.h_max, 255, 255])
+        
+        # Используем uint8 для максимальной производительности OpenCV
+        lower = np.array([store.h_min, store.s_min, store.v_min], dtype=np.uint8)
+        upper = np.array([store.h_max, 255, 255], dtype=np.uint8)
         
         mask = cv2.inRange(hsv, lower, upper)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((7,7), np.uint8))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7,7), np.uint8))
+        kernel = np.ones((7,7), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -31,7 +34,7 @@ class BallDetector:
             area = cv2.contourArea(cnt)
             if area > 500 and area > max_area:
                 perimeter = cv2.arcLength(cnt, True)
-                circularity = 4*math.pi*area/(perimeter**2) if perimeter > 0 else 0
+                circularity = 4*math.pi*area/(perimeter*perimeter) if perimeter > 0 else 0
                 if circularity > 0.5:
                     max_area = area
                     best_cnt = cnt
@@ -46,7 +49,6 @@ class BallDetector:
             self.f_ny = ema(self.f_ny, max(-100, min(100, dy / cy_f * 100)), self.alpha)
             self.last_data = (self.f_ax, self.f_ay, self.f_nx, self.f_ny)
             
-            # Рисуем круг детекции прямо на исходном кадре
             cv2.circle(frame, (int(cx), int(cy)), int(radius), (0, 255, 255), 2)
             cv2.drawMarker(frame, (int(cx), int(cy)), (0, 255, 255), cv2.MARKER_CROSS, 15, 2)
 
