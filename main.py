@@ -1,10 +1,9 @@
 import cv2
 import dearpygui.dearpygui as dpg
 import time
-import numpy as np
 from threading import Thread, Lock
 from config import ConfigStore
-from camera import VideoStream
+from camera import VideoStream, list_available_cameras # Импорт сканера
 from hardware import ArduinoHandler
 from detector import BallDetector
 from ui import create_ui, update_texture
@@ -20,51 +19,55 @@ class SharedBuffer:
 
 shared = SharedBuffer()
 
-def logic_thread_func(store, detector, arduino, vs):
+def logic_thread_func(store, detector, arduino, vs_container):
     prev_time = time.perf_counter()
     fps_ema = 0
-    
     while shared.running:
+        vs = vs_container[0]
         frame = vs.read()
         if frame is not None:
-            # 1. Быстрая детекция
             res_frame, res_mask, data = detector.process(frame, store)
-            
-            # 2. Связь с Arduino
             arduino.send_data(*data, store)
             arduino.receive_data()
-
-            # 3. Статистика скорости
             t_now = time.perf_counter()
             fps_ema = ema(fps_ema, 1.0 / (t_now - prev_time), 0.1)
             prev_time = t_now
-
             with shared.lock:
                 shared.frame = res_frame
                 shared.mask = res_mask
                 shared.logic_fps = int(fps_ema)
-        
         time.sleep(0.001)
 
 def main():
     store = ConfigStore()
     arduino = ArduinoHandler()
     detector = BallDetector()
+    
+    # 1. СНАЧАЛА сканируем камеры (пока никто их не занял)
+    available_cams = list_available_cameras()
+    print(f"Found cameras: {available_cams}")
+    
+    # 2. Инициализируем UI (передаем список камер)
+    create_ui(store, available_cams)
+    
+    # 3. ТОЛЬКО ТЕПЕРЬ открываем основной поток видео
     vs = VideoStream(src=store.camera_id, store=store).start()
+    vs_container = [vs]
     
-    create_ui(store)
-    
-    # Запуск logic-потока
-    Thread(target=logic_thread_func, args=(store, detector, arduino, vs), daemon=True).start()
+    # Запуск логики
+    Thread(target=logic_thread_func, args=(store, detector, arduino, vs_container), daemon=True).start()
 
     while dpg.is_dearpygui_running():
-        # Клавиша M - маска
-        if dpg.is_key_pressed(dpg.mvKey_M):
-            is_shown = dpg.is_item_shown("mask_window")
-            dpg.configure_item("mask_window", show=not is_shown)
-        
-        # Клавиша Q - выход
-        if dpg.is_key_pressed(dpg.mvKey_Q): break
+        if store.cam_id_changed:
+            vs_container[0].stop()
+            time.sleep(0.4)
+            vs_container[0] = VideoStream(src=store.camera_id, store=store).start()
+            store.cam_id_changed = False
+            store.save_to_json()
+
+        if store.hw_changed:
+            vs_container[0].apply_hw_settings()
+            store.hw_changed = False
 
         with shared.lock:
             local_frame = shared.frame
@@ -74,20 +77,17 @@ def main():
         if local_frame is not None:
             dpg.set_value("ui_render_fps", f"Render FPS: {dpg.get_frame_rate():.0f}")
             dpg.set_value("ui_logic_fps", f"Logic FPS: {logic_fps}")
-
             rgba = cv2.cvtColor(local_frame, cv2.COLOR_BGR2RGBA)
             update_texture("camera_texture", rgba)
-            
             if dpg.is_item_shown("mask_window") and local_mask is not None:
                 m_rgba = cv2.cvtColor(local_mask, cv2.COLOR_GRAY2RGBA)
                 update_texture("mask_texture", m_rgba)
 
         dpg.render_dearpygui_frame()
 
-    # Завершение
     shared.running = False
     time.sleep(0.1)
-    vs.stop()
+    vs_container[0].stop()
     arduino.close()
     dpg.destroy_context()
 
