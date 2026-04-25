@@ -49,6 +49,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -83,6 +84,114 @@ def viewer_dir() -> Path:
     user records something so the manifest has a place to live.
     """
     return _project_root() / "viewer"
+
+
+def _bundled_viewer_html() -> Optional[Path]:
+    """Locate the viewer/index.html shipped with the build (or with src).
+
+    PyInstaller's `--add-data` extracts bundled files into a temporary
+    folder exposed as `sys._MEIPASS` at runtime; we look there first. We
+    also fall back to a few platform-specific spots in case a future build
+    config puts the resource elsewhere (Windows portable next to the exe,
+    macOS .app/Contents/Resources/...).
+    """
+    if not _is_frozen():
+        return Path(__file__).resolve().parent / "viewer" / "index.html"
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidate = Path(meipass) / "viewer" / "index.html"
+        if candidate.is_file():
+            return candidate
+
+    exe_dir = Path(sys.executable).resolve().parent
+    candidate = exe_dir / "viewer" / "index.html"
+    if candidate.is_file():
+        return candidate
+
+    if sys.platform == "darwin":
+        # exe sits at <App>.app/Contents/MacOS/<exe>
+        contents = exe_dir.parent
+        candidate = contents / "Resources" / "viewer" / "index.html"
+        if candidate.is_file():
+            return candidate
+
+    return None
+
+
+_viewer_staged_once = False
+
+
+def open_viewer_in_browser() -> tuple[bool, str]:
+    """Open the viewer's index.html in the default browser.
+
+    Works the same in dev and frozen builds because both go through
+    `viewer_dir()`. In a frozen build we first call
+    `_ensure_viewer_html_present()` so the user can hit the button before
+    they've ever recorded anything (otherwise the file wouldn't exist yet).
+
+    Returns (success, message). On success `message` is the resolved
+    file:// URL we opened; on failure it's a human-readable reason the UI
+    can surface to the user / log.
+    """
+    _ensure_viewer_html_present()
+    target = viewer_dir() / "index.html"
+    if not target.is_file():
+        return False, f"viewer/index.html not found at {target}"
+
+    import webbrowser
+    url = target.resolve().as_uri()
+    try:
+        # new=2 -> new tab in existing browser window when possible.
+        opened = webbrowser.open(url, new=2)
+    except Exception as e:
+        return False, f"webbrowser raised: {e}"
+    if not opened:
+        return False, f"no browser registered to open {url}"
+    return True, url
+
+
+def _ensure_viewer_html_present() -> None:
+    """Copy the bundled index.html into the user-data viewer dir if needed.
+
+    No-op in dev (the source file IS the user-facing file). In a frozen
+    build this is what makes `~/Documents/BallTrackerPro/viewer/index.html`
+    appear next to the manifest the first time the user records something.
+
+    Re-copies if the bundled template is newer than what's on disk so app
+    updates ship viewer fixes too. User-edited copies will get overwritten
+    in that case — accept that trade-off; deleting `index.html` from the
+    user dir is enough to opt back in to the bundled one anyway.
+    """
+    global _viewer_staged_once
+    if _viewer_staged_once:
+        return
+
+    src = _bundled_viewer_html()
+    if src is None:
+        _viewer_staged_once = True
+        return
+
+    target = viewer_dir() / "index.html"
+    try:
+        if src.resolve() == target.resolve():
+            _viewer_staged_once = True
+            return  # dev mode — same file
+    except OSError:
+        pass
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if (
+            not target.exists()
+            or src.stat().st_mtime > target.stat().st_mtime
+        ):
+            shutil.copy2(src, target)
+            print(f"[recorder] viewer template staged -> {target}")
+    except OSError as e:
+        print(f"[recorder] could not stage viewer template: {e}")
+    finally:
+        _viewer_staged_once = True
 
 
 def recordings_dir() -> Path:
@@ -167,6 +276,10 @@ class Recorder:
             try:
                 base = recordings_dir()
                 base.mkdir(parents=True, exist_ok=True)
+                # Make sure the viewer template lives next to the manifest
+                # we're about to write — otherwise the user would end up
+                # with manifest.{json,js} but nothing to open them with.
+                _ensure_viewer_html_present()
                 stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 self._path = base / f"trajectory_{stamp}.csv"
                 self._file = open(

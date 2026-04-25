@@ -188,6 +188,24 @@ def cmd_build(debug: bool) -> int:
         "main.py",
     ]
 
+    # Ship the viewer template inside the bundle. At runtime recorder.py
+    # extracts it to ~/Documents/BallTrackerPro/viewer/ (macOS) or
+    # <exe-dir>/viewer/ (Windows) so the user has a UI for the manifest
+    # the recorder is about to start producing. Without this the built app
+    # would create `viewer/manifest.{json,js}` next to the recordings but
+    # leave the user with no `index.html` to open.
+    viewer_html = ROOT / "viewer" / "index.html"
+    if viewer_html.exists():
+        sep = ";" if IS_WINDOWS else ":"
+        # "src{sep}dest_inside_bundle" — dest is relative to _MEIPASS.
+        args += ["--add-data", f"{viewer_html}{sep}viewer"]
+        _info(f"  bundling viewer template from {viewer_html.relative_to(ROOT)}")
+    else:
+        _info(
+            "  WARN viewer/index.html not found — built app will record "
+            "data but the user will have no UI to view it."
+        )
+
     # macOS: ship the uvc-util helper inside the bundle so exposure control
     # works on user machines that never ran `task install_uvc`.
     if IS_MACOS:

@@ -24,8 +24,11 @@
              color: #eee; font: 12px/1.4 monospace; border-radius: 4px;
              white-space: nowrap; visibility: hidden; }
   .legend { margin-top: 10px; font-size: 13px; color: #aaa; }
-  .legend span.swatch { display: inline-block; width: 14px; height: 14px;
-            vertical-align: middle; margin-right: 6px; border-radius: 2px;
+  .legend .line-swatch { display: inline-block; width: 22px; height: 3px;
+            vertical-align: middle; margin: 0 4px 0 0; border-radius: 1px;
+            background: #4d9fff; }
+  .legend .dot-swatch { display: inline-block; width: 8px; height: 8px;
+            vertical-align: middle; margin: 0 8px 0 0; border-radius: 50%;
             background: #ffcc00; }
   .footer { margin-top: 12px; font-size: 11px; color: #555; }
   .empty { padding: 40px; text-align: center; color: #666;
@@ -51,7 +54,8 @@
 </div>
 
 <div class="legend">
-  <span><span class="swatch"></span>nx — X delta sent to Arduino (px)</span>
+  <span class="line-swatch"></span><span class="dot-swatch"></span>
+  nx — X delta sent to Arduino (px) &middot; line: trend, dots: samples
 </div>
 
 <div class="footer">
@@ -274,9 +278,17 @@
     }
   }
 
+  // Two-tone palette: red for the smooth interpolating line ("trend"),
+  // yellow dots on top for individual samples. Keep these in sync with
+  // the .line-swatch / .dot-swatch CSS up top.
+  const LINE_COLOR = '#4d9fff';
+  const DOT_COLOR  = '#ffcc00';
+
   function drawSeries() {
     if (!current || !current.nx.length) return;
-    ctx.strokeStyle = '#ffcc00';
+
+    // Line first.
+    ctx.strokeStyle = LINE_COLOR;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(xPx(current.t[0]), yPx(current.nx[0]));
@@ -284,6 +296,21 @@
       ctx.lineTo(xPx(current.t[i]), yPx(current.nx[i]));
     }
     ctx.stroke();
+
+    // Sample dots overlaid on top of the line. r=1.8 keeps each dot just
+    // bigger than the line thickness so individual samples are visible in
+    // sparse regions, but small enough that dense regions don't smear
+    // into a solid blob. Single batched path -> one fill() for all dots.
+    const r = 1.8;
+    ctx.fillStyle = DOT_COLOR;
+    ctx.beginPath();
+    for (let i = 0; i < current.nx.length; i++) {
+      const x = xPx(current.t[i]);
+      const y = yPx(current.nx[i]);
+      ctx.moveTo(x + r, y);
+      ctx.arc(x, y, r, 0, 2 * Math.PI);
+    }
+    ctx.fill();
   }
 
   function draw() {
@@ -327,10 +354,12 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
+    // Tooltip color matches the dot (DOT_COLOR) — the value being
+    // reported is a single sample, which is what the dots represent.
     tooltip.style.visibility = 'visible';
     tooltip.innerHTML =
         't = '  + current.t[idx].toFixed(3) + ' s<br>'
-      + '<span style="color:#ffcc00">nx = '
+      + '<span style="color:' + DOT_COLOR + '">nx = '
       + current.nx[idx].toFixed(2) + ' px</span>';
     const tx = Math.min(hoverX + 12,
                         canvas.clientWidth - tooltip.offsetWidth - 6);

@@ -181,12 +181,28 @@ def create_ui(store, available_cams):
         
         # СЕКЦИЯ 5: Моторы и приложение
         with dpg.collapsing_header(label="MOTOR & APP", default_open=True):
-            # ENABLE TRACKING (motor on/off) and RECORD (CSV+HTML capture)
-            # sit on the same row — they're the two main "live action"
-            # toggles you reach for during a session.
+            # ENABLE TRACKING (motor on/off) and RECORD (CSV capture) sit
+            # on the same row — they're the two main "live action" toggles
+            # you reach for during a session. The "Open viewer" button next
+            # to them launches the HTML graph viewer in the default browser
+            # using the same `viewer_dir()` the recorder writes into, so
+            # one click works the same in dev and prod.
             def _on_record_toggle(_s, v):
                 store.is_recording = bool(v)
                 store.recording_changed = True
+
+            def _on_open_viewer(*_):
+                # Imported lazily so ui.py stays loadable even if recorder.py
+                # is broken (and so circular imports never bite us). No
+                # success feedback in the UI on purpose: the browser
+                # opening *is* the feedback, and `ui_record_status` is
+                # already owned by the render loop (Rec: idle / Rec: 1.2s).
+                from recorder import open_viewer_in_browser
+                ok, msg = open_viewer_in_browser()
+                if ok:
+                    print(f"[ui] viewer opened: {msg}")
+                else:
+                    print(f"[ui] open viewer failed: {msg}")
 
             with dpg.group(horizontal=True):
                 dpg.add_checkbox(
@@ -200,6 +216,21 @@ def create_ui(store, available_cams):
                     default_value=False,
                     callback=_on_record_toggle,
                 )
+                dpg.add_button(
+                    label="Open viewer",
+                    tag="ui_open_viewer_btn",
+                    callback=_on_open_viewer,
+                )
+                # Tooltip resolves the path lazily so it always reflects the
+                # actual viewer location for the current run mode.
+                with dpg.tooltip("ui_open_viewer_btn"):
+                    from recorder import viewer_dir as _vd
+                    dpg.add_text(
+                        f"Opens {_vd() / 'index.html'} in your default browser.\n"
+                        "Stages the bundled template into that folder first "
+                        "if it isn't there yet (built app, first launch)."
+                    )
+
             # Updated by the render loop in main.py via recorder.status().
             # Default text states "Idle" so the user sees something helpful
             # even before recording is ever started.

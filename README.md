@@ -218,6 +218,38 @@ Gatekeeper restrictions), so we keep settings in the standard per-user location.
 The bundle still ships a seed `settings.json` that gets copied on first launch
 if no user copy exists yet.
 
+### Where trajectory recordings + viewer live at run-time
+
+The **RECORD** checkbox writes per-session `.csv` files plus a small `.data.js`
+sibling, then appends an entry to a manifest the viewer reads. Both folders are
+created on the **first** record:
+
+| Mode                | recordings/                                          | viewer/ (open `index.html`)                          |
+|---------------------|------------------------------------------------------|------------------------------------------------------|
+| Dev                 | `./recordings/`                                      | `./viewer/`                                          |
+| Built Windows app   | `<exe-dir>/recordings/`                              | `<exe-dir>/viewer/`                                  |
+| Built macOS app     | `~/Documents/BallTrackerPro/recordings/`             | `~/Documents/BallTrackerPro/viewer/`                 |
+| Built Linux app     | `~/Documents/BallTrackerPro/recordings/`             | `~/Documents/BallTrackerPro/viewer/`                 |
+
+> **You don't open the viewer from `dist/`.** The build embeds
+> `viewer/index.html` inside the bundle (via PyInstaller `--add-data`); on the
+> first record the recorder copies it out to the user-data `viewer/` folder
+> next to the freshly created `manifest.{json,js}`. That's the path you want
+> to open in your browser. Subsequent app updates re-stage a newer
+> `index.html` automatically (the user copy is replaced when the bundled one
+> has a newer mtime).
+
+Reset to a clean slate at any time with:
+
+```bash
+task clean_recordings
+```
+
+This wipes `recordings/` and resets `manifest.{json,js}` to empty in dev mode.
+For the built app you can clear the same paths by hand (drag the
+`~/Documents/BallTrackerPro/recordings/` folder to the trash and the manifest
+will be regenerated on next record).
+
 ### macOS-specific build details
 
 The `task buildProd` pipeline does three macOS-only steps after PyInstaller
