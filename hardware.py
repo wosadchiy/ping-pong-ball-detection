@@ -39,10 +39,25 @@ class ArduinoHandler:
         return None
 
     def send_data(self, ax, ay, nx, ny, store):
+        """Push a single control packet to Arduino. Field layout:
+
+            ax, ay   — degrees (FOV-based), kept for diagnostics / future use
+            nx, ny   — *pixels* in (-w/2..+w/2), what the firmware actually
+                       uses as `normX`/`normY` to drive the motor. We send
+                       them as floats with two decimals so the motor sees
+                       sub-pixel error coming from the EMA smoother.
+            kp       — proportional gain (float)
+            tracking — 0/1
+            max_omega — speed cap
+
+        NOTE: switching nx/ny from int (-100..100) to float pixels requires
+        the Arduino sketch to declare `normX/normY` as `float` and parse with
+        `toFloat()` (was `toInt()`). See README / commit message.
+        """
         if self.enabled and self.ser and self.ser.is_open:
             try:
                 msg = (
-                    f"{ax:.2f},{ay:.2f},{int(nx)},{int(ny)},"
+                    f"{ax:.2f},{ay:.2f},{nx:.2f},{ny:.2f},"
                     f"{store.kp:.2f},{int(store.is_tracking)},{store.max_omega:.1f}\n"
                 )
                 self.ser.write(msg.encode())

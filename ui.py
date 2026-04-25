@@ -220,6 +220,34 @@ def create_ui(store, available_cams):
     with dpg.window(label="Mask View", tag="mask_window", pos=[310, 520], show=False):
         dpg.add_image("mask_texture")
 
+    # Trajectory plot — live time-series of the X-axis ball delta (nx) that
+    # is being sent to the Arduino. Units are PIXELS (-w/2..+w/2) because
+    # that's what the firmware now consumes directly — see README and
+    # `hardware.send_data`. For the default 640-wide capture we render a
+    # ±340 window (≈6 % visual margin around ±320) so the curve never kisses
+    # the axis edges; the X axis is a rolling 10-second window managed in
+    # `main.py`. Pendulum motion in front of the camera should produce a
+    # clean sinusoid here.
+    with dpg.window(
+        label="Trajectory: ball X delta -> Arduino",
+        tag="trajectory_window",
+        pos=[310, 520],
+        width=640,
+        height=300,
+        no_close=True,
+    ):
+        with dpg.plot(label="", height=-1, width=-1, no_title=True):
+            dpg.add_plot_legend()
+            dpg.add_plot_axis(dpg.mvXAxis, label="t, s", tag="plot_x_axis")
+            dpg.add_plot_axis(dpg.mvYAxis, label="X delta, px", tag="plot_y_axis")
+            dpg.set_axis_limits("plot_y_axis", -340, 340)
+            dpg.add_line_series(
+                [], [],
+                label="nx (px)",
+                parent="plot_y_axis",
+                tag="plot_nx_series",
+            )
+
     # Глобальные горячие клавиши: 'M' переключает окно с маской.
     # Используем mvKey_M, чтобы код не зависел от ASCII-литералов.
     with dpg.handler_registry():

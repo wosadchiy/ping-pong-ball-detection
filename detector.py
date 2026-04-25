@@ -5,10 +5,16 @@ from utils import ema
 
 class BallDetector:
     def __init__(self):
+        # Camera FOV is kept here for `f_ax`/`f_ay` (degree-based diagnostics
+        # that are still emitted in slots 0,1 of the serial frame for any
+        # future use). The motor on Arduino now consumes the *pixel* values
+        # in slots 2,3 (`f_nx`, `f_ny`) — see `detector.process` and
+        # `hardware.send_data`. Raw pixels give ~30x finer effective
+        # resolution than the previous percent (-100..100) representation.
         self.FOV_X, self.FOV_Y = 68.0, 46.0
         self.alpha = 0.25
         self.f_ax, self.f_ay, self.f_nx, self.f_ny = 0.0, 0.0, 0.0, 0.0
-        self.last_data = (0.0, 0.0, 0, 0)
+        self.last_data = (0.0, 0.0, 0.0, 0.0)
 
     def process(self, frame, store):
         h, w = frame.shape[:2]
@@ -42,11 +48,23 @@ class BallDetector:
         if best_cnt is not None:
             (cx, cy), radius = cv2.minEnclosingCircle(best_cnt)
             dx, dy = cx - cx_f, cy_f - cy
-            
+
+            # Clamp pixel deltas to the half-frame range so a noisy detection
+            # that briefly wanders outside the image never injects a giant
+            # spike into the EMA — the smoother would take ages to recover.
+            dx = max(-cx_f, min(cx_f, float(dx)))
+            dy = max(-cy_f, min(cy_f, float(dy)))
+
+            # Slots 0,1 — degree-based angles (kept for diagnostics and
+            # backward compatibility; not consumed by the firmware anymore).
             self.f_ax = ema(self.f_ax, dx * (self.FOV_X / w), self.alpha)
             self.f_ay = ema(self.f_ay, dy * (self.FOV_Y / h), self.alpha)
-            self.f_nx = ema(self.f_nx, max(-100, min(100, dx / cx_f * 100)), self.alpha)
-            self.f_ny = ema(self.f_ny, max(-100, min(100, dy / cy_f * 100)), self.alpha)
+            # Slots 2,3 — raw pixel deltas in (-w/2..+w/2) and (-h/2..+h/2).
+            # This is what the Arduino reads as `normX`/`normY` and uses to
+            # compute `omega = normX * Kp`. Float precision is preserved all
+            # the way down the wire (`hardware.send_data` formats with %.2f).
+            self.f_nx = ema(self.f_nx, dx, self.alpha)
+            self.f_ny = ema(self.f_ny, dy, self.alpha)
             self.last_data = (self.f_ax, self.f_ay, self.f_nx, self.f_ny)
             
             cv2.circle(frame, (int(cx), int(cy)), int(radius), (0, 255, 255), 2)
