@@ -17,9 +17,11 @@ Public API:
     dshow_to_uvc_units(dshow_value)          -> int
 
 The binary is searched in this order:
-    1. `vendor/uvc-util/src/uvc-util`  (project-local build)
-    2. `vendor/uvc-util` (project-local copy)
-    3. `uvc-util` on PATH               (system install)
+    1. `<bundle>/Contents/Resources/uvc-util` (frozen .app, copied at build time)
+    2. `sys._MEIPASS/uvc-util`                (frozen onedir/onefile, --add-binary)
+    3. `vendor/uvc-util/src/uvc-util`         (project-local build, dev mode)
+    4. `vendor/uvc-util`                      (project-local copy)
+    5. `uvc-util` on PATH                     (system install / brew)
 """
 
 from __future__ import annotations
@@ -33,6 +35,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _bundled_candidates() -> list[Path]:
+    """Locations the uvc-util binary may live in when running from a build."""
+    paths: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        paths.append(Path(meipass) / "uvc-util")
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        # Inside a .app bundle: Contents/MacOS/<exe> -> Contents/Resources/uvc-util
+        exe_parent = Path(sys.executable).resolve().parent
+        paths.append(exe_parent.parent / "Resources" / "uvc-util")
+    return paths
+
+
 _LOCAL_CANDIDATES = (
     _PROJECT_ROOT / "vendor" / "uvc-util" / "src" / "uvc-util",
     _PROJECT_ROOT / "vendor" / "uvc-util",
@@ -55,7 +72,7 @@ class UvcDevice:
 
 
 def _binary_path() -> str | None:
-    for candidate in _LOCAL_CANDIDATES:
+    for candidate in (*_bundled_candidates(), *_LOCAL_CANDIDATES):
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return shutil.which("uvc-util")

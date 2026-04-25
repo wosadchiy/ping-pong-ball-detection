@@ -1,18 +1,114 @@
+"""Application settings persisted to disk as JSON.
+
+Where settings.json lives depends on whether we are running from source or
+from a frozen PyInstaller bundle, AND on the host OS. The rules below match
+what users on each platform expect:
+
+    Dev (running `python main.py`)
+        Always next to the source files (project root). Easy to inspect and
+        edit while developing, easy to nuke with `git clean`.
+
+    Frozen build on Windows
+        Next to the executable, exactly like a portable app. Drop the folder
+        anywhere, settings travel with it.
+
+    Frozen build on macOS
+        ~/Library/Application Support/<AppName>/settings.json
+        macOS forbids writing inside the .app bundle (Gatekeeper / SIP /
+        read-only DMG mounts), so we MUST keep state outside it. The
+        bundle still ships a seed file in Contents/Resources/settings.json
+        that gets copied on first launch if no user file exists yet.
+
+    Frozen build on Linux
+        ~/.config/<AppName>/settings.json (XDG Base Directory spec).
+"""
+
+from __future__ import annotations
+
 import json
 import os
+import shutil
 import sys
+from pathlib import Path
+
+APP_NAME = "BallTrackerPro"
+
+
+def _is_frozen() -> bool:
+    return getattr(sys, "frozen", False)
+
+
+def _meipass_dir() -> Path | None:
+    """PyInstaller's runtime extraction dir (read-only at app run-time)."""
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) if base else None
+
+
+def _writable_settings_path(filename: str) -> Path:
+    """Pick the right user-writable location for `settings.json`.
+
+    See the module docstring for the platform matrix.
+    """
+    if not _is_frozen():
+        # Dev mode: keep it next to the source so contributors can poke it.
+        return Path(__file__).resolve().parent / filename
+
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / APP_NAME
+    elif sys.platform.startswith("win"):
+        # Stay portable on Windows: settings live next to the .exe so the
+        # whole folder can be moved around like a self-contained app.
+        base = Path(sys.executable).resolve().parent
+    else:
+        # Linux / *BSD — follow XDG.
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        base = Path(xdg) if xdg else Path.home() / ".config"
+        base = base / APP_NAME
+
+    base.mkdir(parents=True, exist_ok=True)
+    return base / filename
+
+
+def _bundled_seed_path(filename: str) -> Path | None:
+    """Look for a default settings.json shipped INSIDE the frozen bundle."""
+    if not _is_frozen():
+        return None
+
+    candidates: list[Path] = []
+    meipass = _meipass_dir()
+    if meipass:
+        candidates.append(meipass / filename)
+
+    if sys.platform == "darwin":
+        # In a .app bundle the executable sits in Contents/MacOS, so
+        # ../Resources is Contents/Resources — that's where we copied the
+        # seed during the build (see tasks.py).
+        exe_parent = Path(sys.executable).resolve().parent
+        candidates.append(exe_parent.parent / "Resources" / filename)
+
+    # Onedir / Windows portable layout: settings.json next to the exe.
+    candidates.append(Path(sys.executable).resolve().parent / filename)
+
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
 
 class ConfigStore:
-    def __init__(self, filename="settings.json"):
-        # Определяем путь к файлу рядом со скриптом
-        if getattr(sys, 'frozen', False):
-            base_path = os.path.dirname(sys.executable)
-        else:
-            base_path = os.path.dirname(os.path.abspath(__file__))
-        
-        self._filepath = os.path.join(base_path, filename)
+    def __init__(self, filename: str = "settings.json"):
+        self._filepath = _writable_settings_path(filename)
 
-        # Состояние по умолчанию
+        # If the user has no settings yet AND the bundle ships a seed,
+        # copy it so the first run feels populated instead of stock-default.
+        if not self._filepath.exists():
+            seed = _bundled_seed_path(filename)
+            if seed and seed.resolve() != self._filepath.resolve():
+                try:
+                    shutil.copy2(seed, self._filepath)
+                except OSError as e:
+                    print(f"[config] could not seed settings from {seed}: {e}")
+
         self.camera_id = 0
         self.exposure = -5
         self.kp = 1.0
@@ -27,16 +123,20 @@ class ConfigStore:
         self.uvc_vendor_id = 0
         self.uvc_product_id = 0
 
-        # Настройки HSV (Orange по умолчанию)
+        # HSV defaults (Orange).
         self.h_min, self.h_max = 13, 35
         self.s_min, self.s_max = 131, 255
         self.v_min, self.v_max = 100, 255
 
-        # Служебные флаги (не сохраняются в JSON)
         self.hw_changed = False
         self.cam_id_changed = False
 
         self.load_from_json()
+
+    @property
+    def filepath(self) -> str:
+        """Absolute path of the active settings file (handy for the UI / logs)."""
+        return str(self._filepath)
 
     def update_hw(self, key, value):
         """Метод для обновления параметров железа (экспозиция и т.д.)"""
@@ -44,23 +144,24 @@ class ConfigStore:
         self.hw_changed = True
 
     def save_to_json(self):
-        # Сохраняем всё, кроме служебных полей (начинаются с _) и флагов
-        exclude = ['hw_changed', 'cam_id_changed']
-        data = {k: v for k, v in self.__dict__.items() 
-                if not k.startswith('_') and k not in exclude}
+        exclude = {"hw_changed", "cam_id_changed"}
+        data = {
+            k: v for k, v in self.__dict__.items()
+            if not k.startswith("_") and k not in exclude
+        }
         try:
-            with open(self._filepath, 'w') as f:
+            with open(self._filepath, "w") as f:
                 json.dump(data, f, indent=4)
         except Exception as e:
             print(f"Error saving config: {e}")
 
     def load_from_json(self):
-        if os.path.exists(self._filepath):
+        if self._filepath.exists():
             try:
-                with open(self._filepath, 'r') as f:
+                with open(self._filepath, "r") as f:
                     data = json.load(f)
-                    for k, v in data.items():
-                        if hasattr(self, k):
-                            setattr(self, k, v)
+                for k, v in data.items():
+                    if hasattr(self, k):
+                        setattr(self, k, v)
             except Exception as e:
                 print(f"Error loading config: {e}")

@@ -9,3 +9,5 @@ __pycache__/
 
 # macOS uvc-util — собирается на каждой машине через `task install_uvc`
 /vendor/
+
+.DS_Store

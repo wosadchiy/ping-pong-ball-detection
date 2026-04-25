@@ -14,6 +14,7 @@ Usage (called via `task <name>`, see [tool.taskipy.tasks] in pyproject.toml):
 from __future__ import annotations
 
 import argparse
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,25 @@ ROOT = Path(__file__).resolve().parent
 
 IS_WINDOWS = sys.platform.startswith("win")
 IS_MACOS = sys.platform == "darwin"
+
+# Reverse-DNS bundle ID for the macOS .app. Used as CFBundleIdentifier and
+# also fed to `--osx-bundle-identifier` so PyInstaller stamps it consistently.
+MACOS_BUNDLE_ID = "com.partyplay.balltrackerpro"
+
+# Strings shown by macOS in the system permission dialogs ("BallTrackerPro
+# would like to access the camera." + this sentence). Required by Apple — if
+# absent the OS terminates the process the moment it touches the camera.
+MACOS_USAGE_DESCRIPTIONS = {
+    "NSCameraUsageDescription": (
+        "BallTrackerPro uses the camera to detect ping-pong balls in real time."
+    ),
+    # Some OpenCV builds initialise AVCaptureSession in a way that probes the
+    # mic too. Adding this avoids a second TCC crash if that ever happens.
+    "NSMicrophoneUsageDescription": (
+        "BallTrackerPro does not record audio; this entry is only here to "
+        "satisfy the AVFoundation pipeline initialised by OpenCV."
+    ),
+}
 
 
 def _info(msg: str) -> None:
@@ -44,6 +64,68 @@ def cmd_clean() -> int:
     return 0
 
 
+def _uvc_binary_for_bundle() -> Path | None:
+    """Return the path of the locally-built uvc-util binary, if any.
+
+    We bundle this helper into the .app so end-users don't have to clone /
+    compile anything just to control camera exposure on macOS.
+    """
+    candidate = ROOT / "vendor" / "uvc-util" / "src" / "uvc-util"
+    return candidate if candidate.is_file() else None
+
+
+def _patch_macos_info_plist(app_path: Path) -> None:
+    """Write the privacy keys macOS demands; without them the app SIGABRTs.
+
+    macOS aborts any process that reaches a TCC-protected API (camera, mic,
+    location...) without a matching `NS*UsageDescription` in its Info.plist.
+    PyInstaller doesn't add these by default, so we inject them here.
+
+    We also normalise CFBundleIdentifier (PyInstaller defaults to just the
+    app name, which macOS treats as a non-namespaced ID and refuses to
+    persist TCC grants for) and bump LSMinimumSystemVersion.
+    """
+    plist_path = app_path / "Contents" / "Info.plist"
+    if not plist_path.is_file():
+        _info(f"WARN: {plist_path} missing — cannot patch privacy keys")
+        return
+
+    with plist_path.open("rb") as f:
+        info = plistlib.load(f)
+
+    info.update(MACOS_USAGE_DESCRIPTIONS)
+    info["CFBundleIdentifier"] = MACOS_BUNDLE_ID
+    info["LSMinimumSystemVersion"] = "11.0"
+    info["NSHighResolutionCapable"] = True
+    # PyInstaller defaults these to "0.0.0" / empty which looks broken in the
+    # Dock and the crash reporter. Override unconditionally.
+    info["CFBundleShortVersionString"] = "1.0.0"
+    info["CFBundleVersion"] = "1"
+
+    with plist_path.open("wb") as f:
+        plistlib.dump(info, f)
+    _info(f"  patched {plist_path.relative_to(ROOT)}")
+
+
+def _adhoc_resign(app_path: Path) -> None:
+    """Re-sign the bundle with an ad-hoc identity.
+
+    Touching Info.plist after PyInstaller's signing step invalidates the
+    embedded signature; macOS will refuse to launch (or, worse, kill the
+    process mid-run) until we sign again. Ad-hoc (`-`) is enough for local
+    use and CI; for App Store / notarisation you'd swap in a real Developer
+    ID here.
+    """
+    rc = subprocess.run(
+        ["codesign", "--force", "--deep", "--sign", "-", str(app_path)],
+        cwd=ROOT,
+    ).returncode
+    if rc == 0:
+        _info(f"  ad-hoc re-signed {app_path.name}")
+    else:
+        _info(f"WARN: codesign returned {rc}; the app may refuse to launch")
+
+
 def cmd_build(debug: bool) -> int:
     """Build a stand-alone bundle via PyInstaller (debug => with console)."""
     cmd_clean()
@@ -60,6 +142,23 @@ def cmd_build(debug: bool) -> int:
         "--clean",
         "main.py",
     ]
+
+    # macOS: ship the uvc-util helper inside the bundle so exposure control
+    # works on user machines that never ran `task install_uvc`.
+    if IS_MACOS:
+        args += ["--osx-bundle-identifier", MACOS_BUNDLE_ID]
+        uvc = _uvc_binary_for_bundle()
+        if uvc is not None:
+            # Format: "src{os.pathsep}dest_inside_bundle". "." == _MEIPASS root.
+            args += ["--add-binary", f"{uvc}{':.' if not IS_WINDOWS else ';.'}"]
+            _info(f"  including uvc-util helper from {uvc.relative_to(ROOT)}")
+        else:
+            _info(
+                "  NOTE: vendor/uvc-util/src/uvc-util not found — exposure "
+                "controls will be inactive in the built app. Run "
+                "`task install_uvc` then rebuild to fix."
+            )
+
     _info(f"Running: {' '.join(args)}")
     result = subprocess.run(args, cwd=ROOT)
     if result.returncode != 0:
@@ -70,25 +169,36 @@ def cmd_build(debug: bool) -> int:
     #   Windows / Linux  -> dist/<name>/<name>(.exe)        + side files
     #   macOS --windowed -> dist/<name>.app/Contents/MacOS  (a real .app bundle)
     #                       AND dist/<name>/                (raw onedir copy)
-    settings_src = ROOT / "settings.json"
-    if not settings_src.exists():
-        _info("settings.json not found in project root, skipping copy.")
-        return 0
-
-    targets: list[Path] = []
-    onedir = ROOT / "dist" / name
-    if onedir.exists():
-        targets.append(onedir / "settings.json")
+    app_path: Path | None = None
     if IS_MACOS and not debug:
-        app_resources = ROOT / "dist" / f"{name}.app" / "Contents" / "Resources"
-        app_resources.mkdir(parents=True, exist_ok=True)
-        targets.append(app_resources / "settings.json")
+        app_path = ROOT / "dist" / f"{name}.app"
+        if app_path.exists():
+            _patch_macos_info_plist(app_path)
 
-    for dst in targets:
-        shutil.copy2(settings_src, dst)
-        _info(f"  copied settings.json -> {dst.relative_to(ROOT)}")
+    settings_src = ROOT / "settings.json"
+    if settings_src.exists():
+        targets: list[Path] = []
+        onedir = ROOT / "dist" / name
+        if onedir.exists():
+            targets.append(onedir / "settings.json")
+        if app_path is not None and app_path.exists():
+            res = app_path / "Contents" / "Resources"
+            res.mkdir(parents=True, exist_ok=True)
+            targets.append(res / "settings.json")
 
-    _info(f"Build OK: dist/{name}{'.app' if IS_MACOS and not debug else ''}")
+        for dst in targets:
+            shutil.copy2(settings_src, dst)
+            _info(f"  seeded settings.json -> {dst.relative_to(ROOT)}")
+    else:
+        _info("settings.json not found in project root, skipping seed copy.")
+
+    # Re-sign LAST: any modification under .app (plist edit, file copy)
+    # invalidates the previous signature.
+    if app_path is not None and app_path.exists():
+        _adhoc_resign(app_path)
+
+    suffix = ".app" if (IS_MACOS and not debug) else ""
+    _info(f"Build OK: dist/{name}{suffix}")
     return 0
 
 

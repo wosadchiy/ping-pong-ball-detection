@@ -1,6 +1,16 @@
 opencv-python>=4.8
 numpy>=1.24
 pyserial>=3.5
-dearpygui>=1.10,<2
+
+# DearPyGui versioning is OS-specific:
+#   * 1.x is the last branch that boots reliably on macOS (Apple Silicon).
+#     The 2.x viewport closes immediately after `create_viewport()` on Sonoma+
+#     (known upstream issue), so we MUST pin <2 there.
+#     Wheels: cp38..cp312 only — i.e. macOS users need Python 3.12 max.
+#   * 2.x is fine on Windows / Linux and provides wheels for Python 3.13+.
+#     Pinning <2 there breaks installs on modern Pythons.
+dearpygui>=1.10,<2 ; sys_platform == "darwin"
+dearpygui>=2.0    ; sys_platform != "darwin"
+
 taskipy>=1.12
 pyinstaller>=6.0

@@ -188,6 +188,66 @@ task dev          # run the app
 task buildProd    # create a release bundle for the current OS
 ```
 
+> **Cross-compiling is NOT possible.** PyInstaller (and every other Python freezer)
+> bundles host system libraries — it cannot produce a Windows `.exe` from a Mac
+> or vice versa. Build the Windows version on Windows, the macOS version on macOS.
+> For automation, set up GitHub Actions with a `matrix: [windows-latest, macos-latest]`.
+
+---
+
+## 📦 Distribution / Packaged builds
+
+`task buildProd` produces:
+
+* **Windows:** `dist/BallTrackerPro/BallTrackerPro.exe` + side files. Drop the
+  whole folder anywhere; settings.json sits next to the exe and travels with it.
+* **macOS:** `dist/BallTrackerPro.app` (proper signed Cocoa bundle) + the raw
+  onedir variant under `dist/BallTrackerPro/`.
+
+### Where settings.json lives at run-time
+
+| Mode                           | Path                                                          |
+|--------------------------------|---------------------------------------------------------------|
+| Dev (`python main.py`)         | `./settings.json` (project root)                              |
+| Built Windows app              | next to `BallTrackerPro.exe` (portable)                       |
+| Built macOS app                | `~/Library/Application Support/BallTrackerPro/settings.json`  |
+| Built Linux app                | `$XDG_CONFIG_HOME/BallTrackerPro/settings.json` (defaults to `~/.config/...`) |
+
+On macOS / Linux the app cannot write inside its own bundle (read-only DMG mount,
+Gatekeeper restrictions), so we keep settings in the standard per-user location.
+The bundle still ships a seed `settings.json` that gets copied on first launch
+if no user copy exists yet.
+
+### macOS-specific build details
+
+The `task buildProd` pipeline does three macOS-only steps after PyInstaller
+finishes:
+
+1. **Patch `Contents/Info.plist`** — adds `NSCameraUsageDescription` (without it
+   macOS kills the process the moment OpenCV touches the camera with a
+   `Termination Reason: Namespace TCC` SIGABRT), sets a proper reverse-DNS
+   `CFBundleIdentifier` (`com.partyplay.balltrackerpro`), bumps the version to
+   `1.0.0` and `LSMinimumSystemVersion` to 11.0.
+2. **Bundle `vendor/uvc-util/src/uvc-util`** into the `.app` so the exposure
+   controls work on machines that never ran `task install_uvc`. If you forgot to
+   build the helper before packaging, the build still succeeds but you'll see
+   a warning and the slider will be a no-op in the resulting bundle.
+3. **Ad-hoc re-sign** the bundle (`codesign --force --deep --sign - …`) — every
+   modification under `.app/` invalidates PyInstaller's signature, so we sign
+   again. For Mac App Store / outside-distribution you'd swap the `-` for a
+   real Developer ID certificate.
+
+### Distributing to other Macs (Gatekeeper notes)
+
+The ad-hoc signature is enough for **your own Mac** (and typically for CI
+runners), but Gatekeeper will block strangers downloading the `.app` from the
+internet unless one of these is true:
+
+* The user opens it via right-click → **Open** the first time and confirms the
+  dialog.
+* You sign with a paid Apple Developer ID and notarise via `notarytool`.
+* You ship the source and let users build it themselves.
+
 ---
 
 ## 📂 Project Layout
@@ -214,7 +274,9 @@ task buildProd    # create a release bundle for the current OS
 ## 🧪 Troubleshooting
 
 * **macOS: `cv2.VideoCapture` returns black frames** — the terminal/IDE has no camera permission. Open `System Settings → Privacy & Security → Camera`.
+* **macOS: built `.app` crashes immediately with `Termination Reason: Namespace TCC`** — your `Info.plist` is missing `NSCameraUsageDescription`. This happens if you build with raw `pyinstaller` instead of `task buildProd` (the latter patches the plist + re-signs automatically). Re-build via the task or apply the same patch manually.
 * **macOS: Exposure slider doesn't change anything** — you forgot `task install_uvc`. The Dashboard slider only takes effect on USB-UVC cameras after the helper is built. See "macOS exposure setup" above.
+* **macOS: settings.json doesn't persist between launches of the built app** — confirm it actually lives at `~/Library/Application Support/BallTrackerPro/settings.json` (not next to the `.app`, that path is read-only inside a signed bundle).
 * **Arduino not detected** — verify the device shows up:
   * Windows: Device Manager → Ports (COM & LPT)
   * macOS: `ls /dev/cu.*`
