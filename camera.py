@@ -103,6 +103,15 @@ class VideoStream:
         self.started = False
         self.thread = None
 
+        # Honest camera FPS: number of *successful* cap.read() calls per
+        # second, sampled in the capture thread. This is the only counter that
+        # reflects what AVFoundation/V4L2/DShow actually delivers — in
+        # contrast to "Logic FPS" which can re-process the same buffered
+        # frame many times per second when the detector is faster than the
+        # camera. Updated once per second by `update()`. Atomic float write
+        # under the GIL, no lock required.
+        self.cam_fps: float = 0.0
+
     def apply_hw_settings(self):
         if not (self.store and self.cap.isOpened()):
             return
@@ -126,6 +135,9 @@ class VideoStream:
         return self
 
     def update(self):
+        # Sliding 1-second window for the FPS counter.
+        frames_in_window = 0
+        window_start = time.perf_counter()
         while self.started:
             if not self.cap.isOpened():
                 time.sleep(0.1)
@@ -134,6 +146,13 @@ class VideoStream:
             grabbed, frame = self.cap.read()
             if grabbed:
                 self.frame = frame
+                frames_in_window += 1
+                now = time.perf_counter()
+                elapsed = now - window_start
+                if elapsed >= 1.0:
+                    self.cam_fps = frames_in_window / elapsed
+                    frames_in_window = 0
+                    window_start = now
             else:
                 time.sleep(0.01)
 

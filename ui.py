@@ -171,6 +171,11 @@ def create_ui(store, available_cams):
 
         # СЕКЦИЯ 4: Телеметрия
         with dpg.collapsing_header(label="STATISTICS", default_open=True):
+            # Camera FPS — honest, measured from successful cap.read() calls
+            # in the capture thread. Differs from Logic FPS, which counts
+            # detector iterations (and may re-process the same buffered
+            # frame multiple times when the detector outruns the camera).
+            dpg.add_text("Camera FPS: 0.0", tag="ui_cam_fps", color=[255, 200, 0])
             dpg.add_text("Render FPS: 0", tag="ui_render_fps", color=[0, 255, 0])
             dpg.add_text("Logic FPS: 0", tag="ui_logic_fps", color=[0, 255, 255])
         

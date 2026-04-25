@@ -84,6 +84,10 @@ def main():
         if local_frame is not None:
             dpg.set_value("ui_render_fps", f"Render FPS: {dpg.get_frame_rate():.0f}")
             dpg.set_value("ui_logic_fps", f"Logic FPS: {logic_fps}")
+            # Honest camera FPS (read directly from the capture thread). This
+            # is what AVFoundation/V4L2/DShow actually delivers, ignoring how
+            # often we re-process the same frame in the logic loop.
+            dpg.set_value("ui_cam_fps", f"Camera FPS: {vs_container[0].cam_fps:.1f}")
             rgba = cv2.cvtColor(local_frame, cv2.COLOR_BGR2RGBA)
             update_texture("camera_texture", rgba)
             if dpg.is_item_shown("mask_window") and local_mask is not None:
