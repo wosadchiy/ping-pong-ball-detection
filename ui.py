@@ -12,6 +12,79 @@ def _exposure_label(dshow_value: int) -> str:
     return f"{seconds * 1e6:.0f} us"
 
 
+def _add_linked_value_control(
+    label: str,
+    tag_prefix: str,
+    min_value,
+    max_value,
+    default_value,
+    on_change,
+    *,
+    is_float: bool = False,
+    fmt: str = "%.3f",
+    step=1,
+    step_fast=10,
+    input_width: int = 85,
+):
+    """Render a slider paired with a numeric input field, kept in sync.
+
+    Why both: the slider gives quick visual scrubbing, the input field lets you
+    type a precise value (e.g. Kp = 1.235). Editing either widget updates the
+    other AND calls `on_change(value)` exactly once.
+
+    Notes:
+      * `dpg.set_value()` does NOT fire the target widget's callback in
+        DearPyGui, so the cross-updates below are recursion-safe.
+      * The input has `on_enter=True` so we don't spam `on_change` on every
+        keystroke; values commit when the user presses Enter or tabs away.
+      * Both `min_clamped` / `max_clamped` are set so out-of-range typing is
+        snapped to the slider's domain instead of breaking the slider.
+    """
+    slider_tag = f"slider_{tag_prefix}"
+    input_tag = f"input_{tag_prefix}"
+
+    add_slider = dpg.add_slider_float if is_float else dpg.add_slider_int
+    add_input = dpg.add_input_float if is_float else dpg.add_input_int
+
+    def _on_slider(_s, v):
+        dpg.set_value(input_tag, v)
+        on_change(v)
+
+    def _on_input(_s, v):
+        clamped = max(min_value, min(max_value, v))
+        if clamped != v:
+            dpg.set_value(input_tag, clamped)
+        dpg.set_value(slider_tag, clamped)
+        on_change(clamped)
+
+    dpg.add_text(label)
+    with dpg.group(horizontal=True):
+        add_slider(
+            tag=slider_tag,
+            min_value=min_value,
+            max_value=max_value,
+            default_value=default_value,
+            callback=_on_slider,
+            width=-(input_width + 10),  # fill remaining row, leave room for input
+        )
+        input_kwargs = dict(
+            tag=input_tag,
+            default_value=default_value,
+            callback=_on_input,
+            min_value=min_value,
+            max_value=max_value,
+            min_clamped=True,
+            max_clamped=True,
+            on_enter=True,
+            step=step,
+            step_fast=step_fast,
+            width=input_width,
+        )
+        if is_float:
+            input_kwargs["format"] = fmt
+        add_input(**input_kwargs)
+
+
 def create_ui(store, available_cams):
     dpg.create_context()
 
@@ -108,19 +181,27 @@ def create_ui(store, available_cams):
                 default_value=store.is_tracking, 
                 callback=lambda s, v: setattr(store, 'is_tracking', v)
             )
-            dpg.add_slider_float(
-                label="Kp Factor", 
-                min_value=0.0, max_value=5.0, 
-                default_value=store.kp, 
-                callback=lambda s, v: setattr(store, 'kp', v)
+            _add_linked_value_control(
+                label="Kp Factor",
+                tag_prefix="kp",
+                min_value=0.0, max_value=5.0,
+                default_value=float(store.kp),
+                on_change=lambda v: setattr(store, 'kp', float(v)),
+                is_float=True,
+                fmt="%.3f",
+                step=0.05,
+                step_fast=0.5,
             )
-            
-            # ВОТ ОН: Ползунок максимальной скорости (max_omega)
-            dpg.add_slider_int(
-                label="Max Speed", 
-                min_value=30, max_value=100, 
-                default_value=int(store.max_omega), 
-                callback=lambda s, v: setattr(store, 'max_omega', float(v))
+
+            _add_linked_value_control(
+                label="Max Speed",
+                tag_prefix="max_omega",
+                min_value=30, max_value=100,
+                default_value=int(store.max_omega),
+                on_change=lambda v: setattr(store, 'max_omega', float(v)),
+                is_float=False,
+                step=1,
+                step_fast=10,
             )
             
             dpg.add_spacer(height=10)

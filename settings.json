@@ -1,7 +1,7 @@
 {
     "camera_id": 0,
     "exposure": -6,
-    "kp": 0.39,
+    "kp": 0.4000000059604645,
     "is_tracking": false,
     "max_omega": 40.0,
     "uvc_device_name": "",
