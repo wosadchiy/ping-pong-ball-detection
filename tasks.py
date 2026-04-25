@@ -64,6 +64,51 @@ def cmd_clean() -> int:
     return 0
 
 
+def cmd_clean_recordings() -> int:
+    """Wipe `recordings/` and reset `viewer/manifest.{json,js}` to empty.
+
+    Use this after experimenting to get back to a pristine state without
+    having to remember to also reset the manifest by hand (otherwise the
+    viewer would still try to load deleted .data.js files and show errors).
+    """
+    _info("Cleaning trajectory recordings + viewer manifest...")
+
+    rec_dir = ROOT / "recordings"
+    removed_files = 0
+    if rec_dir.exists():
+        for p in rec_dir.iterdir():
+            if p.is_file():
+                try:
+                    p.unlink()
+                    removed_files += 1
+                except OSError as e:
+                    _info(f"  WARN could not delete {p.name}: {e}")
+    _info(f"  removed {removed_files} file(s) from recordings/")
+
+    viewer = ROOT / "viewer"
+    if viewer.exists():
+        # Reuse recorder's writer so the wrapper format stays in sync with
+        # whatever the running app produces. Otherwise it's too easy for
+        # this script and the recorder to drift apart.
+        sys.path.insert(0, str(ROOT))
+        try:
+            from recorder import _write_manifest_pair
+            _write_manifest_pair(viewer, [])
+            _info("  reset viewer/manifest.json + viewer/manifest.js")
+        except Exception as e:
+            _info(f"  WARN could not reset manifest via recorder: {e}")
+
+        for p in list(viewer.glob("*.bak")) + list(viewer.glob("*.tmp")):
+            try:
+                p.unlink()
+                _info(f"  removed {p.relative_to(ROOT)}")
+            except OSError:
+                pass
+
+    _info("Done.")
+    return 0
+
+
 def _uvc_binary_for_bundle() -> Path | None:
     """Return the path of the locally-built uvc-util binary, if any.
 
@@ -297,6 +342,10 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("clean", help="remove dist/, build/ and *.spec")
+    sub.add_parser(
+        "clean_recordings",
+        help="wipe recordings/ and reset viewer/manifest.{json,js}",
+    )
     sub.add_parser("install", help="pip install -r requirements.txt (+uvc on macOS)")
     sub.add_parser("install_uvc", help="build vendor/uvc-util (macOS only)")
 
@@ -310,6 +359,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.cmd == "clean":
         return cmd_clean()
+    if args.cmd == "clean_recordings":
+        return cmd_clean_recordings()
     if args.cmd == "build":
         return cmd_build(debug=args.debug)
     if args.cmd == "install":

@@ -8,6 +8,7 @@ from camera import VideoStream, list_available_cameras # Импорт скане
 from hardware import ArduinoHandler
 from detector import BallDetector
 from platform_utils import IS_MACOS
+from recorder import Recorder
 from ui import create_ui, update_texture
 from utils import ema
 
@@ -33,7 +34,7 @@ class SharedBuffer:
 
 shared = SharedBuffer()
 
-def logic_thread_func(store, detector, arduino, vs_container):
+def logic_thread_func(store, detector, arduino, vs_container, recorder):
     prev_time = time.perf_counter()
     fps_ema = 0
     while shared.running:
@@ -46,11 +47,16 @@ def logic_thread_func(store, detector, arduino, vs_container):
             t_now = time.perf_counter()
             fps_ema = ema(fps_ema, 1.0 / (t_now - prev_time), 0.1)
             prev_time = t_now
+            # Record raw pixel deltas (slots 2,3 of `data`) at the full
+            # logic-thread cadence — that's the most honest sample of what
+            # the motor sees, no render-side downsampling. Recorder is
+            # cheap when off (single boolean check, no lock).
+            recorder.add_sample(float(data[2]), float(data[3]))
             with shared.lock:
                 shared.frame = res_frame
                 shared.mask = res_mask
                 shared.logic_fps = int(fps_ema)
-                # data == (ax, ay, nx, ny); we plot nx — the percent-scale
+                # data == (ax, ay, nx, ny); we plot nx — the pixel-scale
                 # X delta that drives the motor.
                 shared.nx = float(data[2])
         time.sleep(0.001)
@@ -76,9 +82,13 @@ def main():
     # 4. ТОЛЬКО ТЕПЕРЬ открываем основной поток видео
     vs = VideoStream(src=store.camera_id, store=store).start()
     vs_container = [vs]
-    
+
+    # Trajectory recorder — owned by main, sampled by the logic thread,
+    # toggled by the UI checkbox via `store.recording_changed`.
+    recorder = Recorder()
+
     # Запуск логики
-    Thread(target=logic_thread_func, args=(store, detector, arduino, vs_container), daemon=True).start()
+    Thread(target=logic_thread_func, args=(store, detector, arduino, vs_container, recorder), daemon=True).start()
 
     # Trajectory plot bookkeeping. We sample `shared.nx` at PLOT_SAMPLE_HZ
     # (not at render rate) so the deque doesn't bloat when render FPS spikes
@@ -101,6 +111,33 @@ def main():
             vs_container[0].apply_hw_settings()
             store.hw_changed = False
 
+        # UI checkbox -> Recorder dispatch. We snapshot the current Kp /
+        # max_omega / capture resolution into the metadata so the resulting
+        # CSV (and HTML viewer) is self-explanatory weeks later.
+        if store.recording_changed:
+            store.recording_changed = False
+            if store.is_recording:
+                # Snapshot actual camera FPS at start. The driver can drift
+                # later, but this gives a useful "the recording was made at
+                # ~X FPS" headline. The recorder *also* computes the real
+                # sample rate from len(samples)/duration on stop(), which is
+                # what the logic thread actually delivered (usually higher
+                # than the camera FPS because we re-process frames).
+                meta = {
+                    "kp": f"{store.kp:.3f}",
+                    "max_omega": f"{store.max_omega:.1f}",
+                    "resolution": "640x480",
+                    "source": "logic_thread",
+                    "camera_fps": f"{vs_container[0].cam_fps:.1f}",
+                }
+                if recorder.start(meta) is None:
+                    # Open failed — revert the checkbox so the UI stays
+                    # honest about the actual recorder state.
+                    store.is_recording = False
+                    dpg.set_value("ui_record_toggle", False)
+            else:
+                recorder.stop()
+
         with shared.lock:
             local_frame = shared.frame
             local_mask = shared.mask
@@ -114,6 +151,18 @@ def main():
             # is what AVFoundation/V4L2/DShow actually delivers, ignoring how
             # often we re-process the same frame in the logic loop.
             dpg.set_value("ui_cam_fps", f"Camera FPS: {vs_container[0].cam_fps:.1f}")
+
+            # Recording status — refreshed on every frame; cheap (one stat()).
+            rec_status = recorder.status()
+            if rec_status["recording"]:
+                dpg.set_value(
+                    "ui_record_status",
+                    f"Rec: {rec_status['duration_sec']:.1f}s  "
+                    f"{rec_status['samples']} pts  "
+                    f"{rec_status['size_pretty']}",
+                )
+            else:
+                dpg.set_value("ui_record_status", "Rec: idle")
             rgba = cv2.cvtColor(local_frame, cv2.COLOR_BGR2RGBA)
             update_texture("camera_texture", rgba)
             if dpg.is_item_shown("mask_window") and local_mask is not None:
@@ -142,6 +191,11 @@ def main():
 
     shared.running = False
     time.sleep(0.1)
+    # Make sure an in-progress recording is closed cleanly so the CSV is
+    # flushed and the HTML viewer is generated even if the user quits via
+    # the window button.
+    if recorder.is_recording:
+        recorder.stop()
     vs_container[0].stop()
     arduino.close()
     dpg.destroy_context()

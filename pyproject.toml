@@ -3,12 +3,13 @@
 # Cross-platform tasks (recommended). They delegate to tasks.py so the same
 # `task <name>` works identically on Windows, macOS and Linux.
 # ---------------------------------------------------------------------------
-dev          = "python main.py"
-install      = "python tasks.py install"
-install_uvc  = "python tasks.py install_uvc"
-clean        = "python tasks.py clean"
-buildDev     = "python tasks.py build --debug"
-buildProd    = "python tasks.py build"
+dev               = "python main.py"
+install           = "python tasks.py install"
+install_uvc       = "python tasks.py install_uvc"
+clean             = "python tasks.py clean"
+clean_recordings  = "python tasks.py clean_recordings"
+buildDev          = "python tasks.py build --debug"
+buildProd         = "python tasks.py build"
 
 # ---------------------------------------------------------------------------
 # Platform-specific shell variants (kept for transparency / debugging).

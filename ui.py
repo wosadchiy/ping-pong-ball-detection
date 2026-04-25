@@ -181,11 +181,31 @@ def create_ui(store, available_cams):
         
         # СЕКЦИЯ 5: Моторы и приложение
         with dpg.collapsing_header(label="MOTOR & APP", default_open=True):
-            dpg.add_checkbox(
-                label="ENABLE TRACKING", 
-                default_value=store.is_tracking, 
-                callback=lambda s, v: setattr(store, 'is_tracking', v)
-            )
+            # ENABLE TRACKING (motor on/off) and RECORD (CSV+HTML capture)
+            # sit on the same row — they're the two main "live action"
+            # toggles you reach for during a session.
+            def _on_record_toggle(_s, v):
+                store.is_recording = bool(v)
+                store.recording_changed = True
+
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(
+                    label="ENABLE TRACKING",
+                    default_value=store.is_tracking,
+                    callback=lambda s, v: setattr(store, 'is_tracking', v),
+                )
+                dpg.add_checkbox(
+                    label="RECORD",
+                    tag="ui_record_toggle",
+                    default_value=False,
+                    callback=_on_record_toggle,
+                )
+            # Updated by the render loop in main.py via recorder.status().
+            # Default text states "Idle" so the user sees something helpful
+            # even before recording is ever started.
+            dpg.add_text("Rec: idle", tag="ui_record_status",
+                         color=[160, 160, 160])
+
             _add_linked_value_control(
                 label="Kp Factor",
                 tag_prefix="kp",

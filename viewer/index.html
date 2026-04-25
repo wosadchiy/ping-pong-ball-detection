@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BallTrackerPro — recordings viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+         sans-serif; margin: 24px; background: #161616; color: #e8e8e8;
+         max-width: 1280px; }
+  h1 { font-size: 18px; margin: 0 0 14px; font-weight: 600; }
+  .toolbar { display: flex; gap: 12px; align-items: center;
+             margin-bottom: 12px; flex-wrap: wrap; }
+  select { background: #1d1d1d; color: #eee; border: 1px solid #3a3a3a;
+           padding: 6px 10px; font: 13px monospace; border-radius: 4px;
+           min-width: 360px; }
+  .meta { color: #8a8a8a; font-size: 13px; line-height: 1.6; }
+  .wrap { position: relative; width: 100%; }
+  canvas { display: block; background: #0d0d0d; border: 1px solid #2a2a2a;
+           width: 100%; height: 480px; }
+  #tooltip { position: absolute; pointer-events: none; padding: 6px 9px;
+             background: rgba(0,0,0,0.85); border: 1px solid #444;
+             color: #eee; font: 12px/1.4 monospace; border-radius: 4px;
+             white-space: nowrap; visibility: hidden; }
+  .legend { margin-top: 10px; font-size: 13px; color: #aaa; }
+  .legend span.swatch { display: inline-block; width: 14px; height: 14px;
+            vertical-align: middle; margin-right: 6px; border-radius: 2px;
+            background: #ffcc00; }
+  .footer { margin-top: 12px; font-size: 11px; color: #555; }
+  .empty { padding: 40px; text-align: center; color: #666;
+           border: 1px dashed #333; border-radius: 6px; }
+  .error { padding: 14px; background: #2a1212; border: 1px solid #5a2020;
+           color: #e8a8a8; border-radius: 4px; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>BallTrackerPro — recordings viewer</h1>
+
+<div class="toolbar">
+  <label for="picker" style="color:#888;font-size:13px;">Recording:</label>
+  <select id="picker"></select>
+</div>
+
+<div class="meta" id="meta">—</div>
+
+<div class="wrap">
+  <canvas id="chart" width="1200" height="480"></canvas>
+  <div id="tooltip"></div>
+</div>
+
+<div class="legend">
+  <span><span class="swatch"></span>nx — X delta sent to Arduino (px)</span>
+</div>
+
+<div class="footer">
+  Hover the plot to inspect samples. Recordings live in the
+  <code>recordings/</code> folder (git-ignored). Manifest is
+  <code>manifest.json</code> (proper JSON, source of truth) mirrored into
+  <code>manifest.js</code> for the browser.
+</div>
+
+<div id="empty" class="empty" style="display:none">
+  No recordings yet. Run BallTrackerPro, hit the <b>RECORD</b> checkbox in
+  the UI, do your thing, then come back here and refresh.
+</div>
+
+<div id="error" class="error" style="display:none"></div>
+
+<!-- Manifest is loaded via <script> tag, NOT fetch(), because browsers
+     block fetch() to local files (CORS) when this page is opened with the
+     file:// protocol. The .js wrapper exists for exactly this reason; the
+     `manifest.json` file next to it is the source of truth that any other
+     tool (pandas, jq, your own scripts) can consume. -->
+<script src="manifest.js"></script>
+
+<script>
+(function () {
+  const picker  = document.getElementById('picker');
+  const meta    = document.getElementById('meta');
+  const empty   = document.getElementById('empty');
+  const errBox  = document.getElementById('error');
+  const canvas  = document.getElementById('chart');
+  const tooltip = document.getElementById('tooltip');
+  const ctx     = canvas.getContext('2d');
+
+  const manifest = (window.MANIFEST || []).slice().sort(
+    (a, b) => (b.started_at || '').localeCompare(a.started_at || '')
+  );
+
+  if (manifest.length === 0) {
+    empty.style.display = '';
+    canvas.style.display = 'none';
+    document.querySelector('.legend').style.display = 'none';
+    document.querySelector('.toolbar').style.display = 'none';
+    meta.textContent = '';
+    return;
+  }
+
+  for (const entry of manifest) {
+    const opt = document.createElement('option');
+    opt.value = entry.id;
+    const dur = (entry.duration_sec != null)
+      ? entry.duration_sec.toFixed(2) + 's' : '?s';
+    const cam = entry.camera_fps != null ? entry.camera_fps + ' FPS' : '?';
+    opt.textContent =
+      `${entry.started_at || entry.id}   ·   ${dur}   ·   `
+      + `Kp=${entry.kp ?? '?'}   ·   cam=${cam}   ·   `
+      + `${entry.samples ?? '?'} pts`;
+    picker.appendChild(opt);
+  }
+
+  // Cache loaded payloads so flipping back to a previous recording is
+  // instant (no second <script> injection).
+  const cache = {};
+
+  function showError(msg) {
+    errBox.textContent = msg;
+    errBox.style.display = '';
+  }
+  function clearError() { errBox.style.display = 'none'; }
+
+  function loadEntry(id) {
+    clearError();
+    if (cache[id]) { renderEntry(id, cache[id]); return; }
+    const entry = manifest.find(e => e.id === id);
+    if (!entry) { showError('Entry not found in manifest: ' + id); return; }
+    if (!entry.data_js) {
+      showError('Manifest entry has no data_js path.');
+      return;
+    }
+    const tag = document.createElement('script');
+    tag.src = entry.data_js;
+    tag.onload = () => {
+      const payload = window.RECORDING_DATA;
+      window.RECORDING_DATA = null;     // free reference for GC
+      if (!payload || !payload.t || !payload.nx) {
+        showError('Loaded ' + entry.data_js
+                  + ' but window.RECORDING_DATA is missing t/nx arrays.');
+        return;
+      }
+      cache[id] = payload;
+      renderEntry(id, payload);
+    };
+    tag.onerror = () => showError(
+      'Could not load ' + entry.data_js
+      + '. Has the file been moved or deleted from recordings/?'
+    );
+    document.head.appendChild(tag);
+  }
+
+  picker.addEventListener('change', e => loadEntry(e.target.value));
+  loadEntry(manifest[0].id);
+
+  // ---- chart rendering ------------------------------------------------ //
+
+  let current = null;          // { t: [...], nx: [...] }
+  let xMin, xMax, yMin, yMax;
+  const dpr = window.devicePixelRatio || 1;
+  const PAD = { top: 18, right: 18, bottom: 36, left: 60 };
+
+  function renderEntry(id, payload) {
+    current = payload;
+    const entry = manifest.find(e => e.id === id);
+    // `camera_fps` is what the driver delivered at start; `sample_rate_hz`
+    // is what the logic thread actually wrote to disk. They differ because
+    // the logic loop re-processes the latest frame faster than the camera
+    // produces new ones, so sample_rate_hz is usually 2-3x camera_fps.
+    const camFps = entry.camera_fps != null ? entry.camera_fps : '?';
+    const sampleRate = entry.sample_rate_hz != null
+      ? entry.sample_rate_hz.toFixed(1) : '?';
+    meta.innerHTML =
+        `<b>${entry.id}</b> &middot; `
+      + `Started: ${entry.started_at || '?'} &middot; `
+      + `Duration: ${(entry.duration_sec ?? 0).toFixed(2)} s &middot; `
+      + `Camera: ${camFps} FPS &middot; `
+      + `Sample rate: ${sampleRate} Hz &middot; `
+      + `Samples: ${entry.samples ?? '?'} &middot; `
+      + `Kp: ${entry.kp ?? '?'} &middot; `
+      + `max_omega: ${entry.max_omega ?? '?'} &middot; `
+      + `Resolution: ${entry.resolution ?? '?'} &middot; `
+      + `<a style="color:#7af;text-decoration:none" href="${entry.csv}" download>download CSV</a>`;
+
+    xMin = current.t[0];
+    xMax = current.t[current.t.length - 1];
+    yMin = Math.min(...current.nx);
+    yMax = Math.max(...current.nx);
+    if (yMin === yMax) { yMin -= 1; yMax += 1; }
+    const yPad = (yMax - yMin) * 0.08;
+    yMin -= yPad; yMax += yPad;
+    resize();
+  }
+
+  function resize() {
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+    canvas.width  = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function xPx(t) {
+    const w = canvas.clientWidth - PAD.left - PAD.right;
+    return PAD.left + (t - xMin) / (xMax - xMin || 1) * w;
+  }
+  function yPx(v) {
+    const h = canvas.clientHeight - PAD.top - PAD.bottom;
+    return PAD.top + (1 - (v - yMin) / (yMax - yMin || 1)) * h;
+  }
+
+  function niceStep(range, target) {
+    const raw = range / target;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    let step;
+    if (norm < 1.5) step = 1;
+    else if (norm < 3) step = 2;
+    else if (norm < 7) step = 5;
+    else step = 10;
+    return step * mag;
+  }
+
+  function drawGrid() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx.strokeStyle = '#262626';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#888';
+    ctx.font = '11px -apple-system, sans-serif';
+
+    // X grid + labels
+    const xStep = niceStep(xMax - xMin, 8);
+    const xStart = Math.ceil(xMin / xStep) * xStep;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (let v = xStart; v <= xMax; v += xStep) {
+      const x = xPx(v);
+      ctx.beginPath();
+      ctx.moveTo(x, PAD.top);
+      ctx.lineTo(x, h - PAD.bottom);
+      ctx.stroke();
+      ctx.fillText(v.toFixed(xStep < 1 ? 2 : 1) + ' s',
+                   x, h - PAD.bottom + 4);
+    }
+
+    // Y grid + labels
+    const yStep = niceStep(yMax - yMin, 6);
+    const yStart = Math.ceil(yMin / yStep) * yStep;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let v = yStart; v <= yMax; v += yStep) {
+      const y = yPx(v);
+      ctx.beginPath();
+      ctx.moveTo(PAD.left, y);
+      ctx.lineTo(w - PAD.right, y);
+      ctx.stroke();
+      ctx.fillText(v.toFixed(0) + ' px', PAD.left - 6, y);
+    }
+
+    ctx.strokeStyle = '#3a3a3a';
+    ctx.strokeRect(PAD.left, PAD.top,
+                   w - PAD.left - PAD.right,
+                   h - PAD.top - PAD.bottom);
+
+    if (yMin <= 0 && yMax >= 0) {
+      ctx.strokeStyle = '#555';
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(PAD.left, yPx(0));
+      ctx.lineTo(w - PAD.right, yPx(0));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  function drawSeries() {
+    if (!current || !current.nx.length) return;
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(xPx(current.t[0]), yPx(current.nx[0]));
+    for (let i = 1; i < current.nx.length; i++) {
+      ctx.lineTo(xPx(current.t[i]), yPx(current.nx[i]));
+    }
+    ctx.stroke();
+  }
+
+  function draw() {
+    if (!current) return;
+    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    drawGrid();
+    drawSeries();
+  }
+
+  function nearestIndex(t) {
+    const a = current.t;
+    let lo = 0, hi = a.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid] < t) lo = mid + 1; else hi = mid;
+    }
+    if (lo > 0 && (t - a[lo - 1]) < (a[lo] - t)) return lo - 1;
+    return lo;
+  }
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!current) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    if (x < PAD.left || x > canvas.clientWidth - PAD.right) {
+      tooltip.style.visibility = 'hidden';
+      draw();
+      return;
+    }
+    const w = canvas.clientWidth - PAD.left - PAD.right;
+    const t = xMin + (x - PAD.left) / w * (xMax - xMin);
+    const idx = nearestIndex(t);
+    const hoverX = xPx(current.t[idx]);
+    draw();
+
+    ctx.strokeStyle = '#666';
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath();
+    ctx.moveTo(hoverX, PAD.top);
+    ctx.lineTo(hoverX, canvas.clientHeight - PAD.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    tooltip.style.visibility = 'visible';
+    tooltip.innerHTML =
+        't = '  + current.t[idx].toFixed(3) + ' s<br>'
+      + '<span style="color:#ffcc00">nx = '
+      + current.nx[idx].toFixed(2) + ' px</span>';
+    const tx = Math.min(hoverX + 12,
+                        canvas.clientWidth - tooltip.offsetWidth - 6);
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top  = (PAD.top + 6) + 'px';
+  });
+  canvas.addEventListener('mouseleave', () => {
+    tooltip.style.visibility = 'hidden';
+    draw();
+  });
+
+  window.addEventListener('resize', resize);
+})();
+</script>
+
+</body>
+</html>

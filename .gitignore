@@ -10,4 +10,15 @@ __pycache__/
 # macOS uvc-util — собирается на каждой машине через `task install_uvc`
 /vendor/
 
+# Trajectory recordings — пользовательские данные, не код.
+# В dev-режиме лежат прямо в репо, в `.app`/`.exe` — в Documents/exe-dir.
+# Сама папка `viewer/` (HTML-шаблон + manifest) при этом git-видима — это
+# переиспользуемый просмотрщик, в который recorder.py добавляет ссылки на
+# свежие записи.
+/recordings/
+
+# Sidecar бэкапы повреждённого manifest.json, если recorder его перезаписал
+viewer/manifest.json.bak
+viewer/*.tmp
+
 .DS_Store

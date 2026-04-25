@@ -131,6 +131,12 @@ class ConfigStore:
         self.hw_changed = False
         self.cam_id_changed = False
 
+        # Trajectory recording — session-only state, never persisted.
+        # `recording_changed` is a one-shot flag the UI sets so the main
+        # render loop can dispatch a start()/stop() on the Recorder.
+        self.is_recording = False
+        self.recording_changed = False
+
         self.load_from_json()
 
     @property
@@ -144,7 +150,10 @@ class ConfigStore:
         self.hw_changed = True
 
     def save_to_json(self):
-        exclude = {"hw_changed", "cam_id_changed"}
+        exclude = {
+            "hw_changed", "cam_id_changed",
+            "is_recording", "recording_changed",
+        }
         data = {
             k: v for k, v in self.__dict__.items()
             if not k.startswith("_") and k not in exclude
