@@ -2,33 +2,4 @@
 // Mirror of manifest.json wrapped in a `window.MANIFEST = ...;` assignment so the viewer
 // can load it via a <script> tag (browsers block fetch() to local files when the page
 // is served from file://).
-window.MANIFEST = [
-  {
-    "id": "trajectory_2026-04-25_19-53-52",
-    "csv": "../recordings/trajectory_2026-04-25_19-53-52.csv",
-    "data_js": "../recordings/trajectory_2026-04-25_19-53-52.data.js",
-    "started_at": "2026-04-25T19:53:52",
-    "duration_sec": 2.949,
-    "samples": 579,
-    "sample_rate_hz": 196.3,
-    "camera_fps": "120.1",
-    "kp": "0.400",
-    "max_omega": "40.0",
-    "resolution": "640x480",
-    "source": "logic_thread"
-  },
-  {
-    "id": "trajectory_2026-04-25_19-56-48",
-    "csv": "../recordings/trajectory_2026-04-25_19-56-48.csv",
-    "data_js": "../recordings/trajectory_2026-04-25_19-56-48.data.js",
-    "started_at": "2026-04-25T19:56:48",
-    "duration_sec": 8.622,
-    "samples": 1778,
-    "sample_rate_hz": 206.2,
-    "camera_fps": "120.0",
-    "kp": "0.400",
-    "max_omega": "40.0",
-    "resolution": "640x480",
-    "source": "logic_thread"
-  }
-];
+window.MANIFEST = [];
