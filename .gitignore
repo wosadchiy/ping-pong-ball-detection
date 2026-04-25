@@ -6,3 +6,6 @@ __pycache__/
 *.spec
 /build
 /dist
+
+# macOS uvc-util — собирается на каждой машине через `task install_uvc`
+/vendor/

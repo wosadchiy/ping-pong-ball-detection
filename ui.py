@@ -1,6 +1,17 @@
 import dearpygui.dearpygui as dpg
 import numpy as np
 
+
+def _exposure_label(dshow_value: int) -> str:
+    """Human-readable shutter time for the DirectShow log2-seconds scale."""
+    seconds = 2.0 ** dshow_value
+    if seconds >= 1.0:
+        return f"{seconds:.2f} s"
+    if seconds >= 1e-3:
+        return f"{seconds * 1e3:.2f} ms"
+    return f"{seconds * 1e6:.0f} us"
+
+
 def create_ui(store, available_cams):
     dpg.create_context()
 
@@ -22,6 +33,13 @@ def create_ui(store, available_cams):
         dpg.set_value("slider_s_min", store.s_min)
         dpg.set_value("slider_v_min", store.v_min)
         store.save_to_json()
+
+    def toggle_mask_window(*_):
+        """Show/hide the HSV mask preview window. Bound to button + key 'M'."""
+        if dpg.is_item_shown("mask_window"):
+            dpg.hide_item("mask_window")
+        else:
+            dpg.show_item("mask_window")
 
     # Реестр текстур для вывода видео
     with dpg.texture_registry(show=False):
@@ -47,11 +65,20 @@ def create_ui(store, available_cams):
                 default_value=store.camera_id if store.camera_id in available_cams else available_cams[0],
                 callback=lambda s, v: (setattr(store, 'camera_id', int(v)), setattr(store, 'cam_id_changed', True))
             )
+            def _on_exposure(_s, v):
+                store.update_hw("exposure", v)
+                dpg.set_value("exposure_readout", f"Shutter: {_exposure_label(v)}")
+
             dpg.add_slider_int(
-                label="Exposure", 
-                min_value=-13, max_value=-1, 
-                default_value=store.exposure, 
-                callback=lambda s, v: store.update_hw('exposure', v)
+                label="Exposure",
+                min_value=-13, max_value=-1,
+                default_value=store.exposure,
+                callback=_on_exposure,
+            )
+            dpg.add_text(
+                f"Shutter: {_exposure_label(store.exposure)}",
+                tag="exposure_readout",
+                color=[180, 180, 180],
             )
 
         # СЕКЦИЯ 2: Выбор цели
@@ -97,6 +124,7 @@ def create_ui(store, available_cams):
             )
             
             dpg.add_spacer(height=10)
+            dpg.add_button(label="TOGGLE MASK VIEW (M)", width=-1, callback=toggle_mask_window)
             dpg.add_button(label="SAVE ALL SETTINGS", width=-1, callback=store.save_to_json)
 
     # Окна для видеопотоков
@@ -105,6 +133,11 @@ def create_ui(store, available_cams):
     
     with dpg.window(label="Mask View", tag="mask_window", pos=[310, 520], show=False):
         dpg.add_image("mask_texture")
+
+    # Глобальные горячие клавиши: 'M' переключает окно с маской.
+    # Используем mvKey_M, чтобы код не зависел от ASCII-литералов.
+    with dpg.handler_registry():
+        dpg.add_key_press_handler(key=dpg.mvKey_M, callback=toggle_mask_window)
 
     dpg.create_viewport(title='BallTracker Pro v3.5', width=1000, height=900, vsync=False)
     dpg.setup_dearpygui()

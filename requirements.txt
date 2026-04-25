@@ -1,0 +1,6 @@
+opencv-python>=4.8
+numpy>=1.24
+pyserial>=3.5
+dearpygui>=1.10,<2
+taskipy>=1.12
+pyinstaller>=6.0

@@ -18,7 +18,15 @@ class ConfigStore:
         self.kp = 1.0
         self.is_tracking = False
         self.max_omega = 40.0
-        
+
+        # Привязка USB-UVC камеры на macOS (используется uvc-util для управления
+        # экспозицией). Если камер UVC несколько — задайте либо часть имени
+        # (например "Global Shutter"), либо точные vendor/product ID. При
+        # ровно одной UVC-камере на шине эти поля можно не трогать.
+        self.uvc_device_name = ""
+        self.uvc_vendor_id = 0
+        self.uvc_product_id = 0
+
         # Настройки HSV (Orange по умолчанию)
         self.h_min, self.h_max = 13, 35
         self.s_min, self.s_max = 131, 255

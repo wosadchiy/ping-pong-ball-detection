@@ -1,9 +1,12 @@
 {
     "camera_id": 0,
-    "exposure": -5,
+    "exposure": -6,
     "kp": 0.39,
     "is_tracking": false,
     "max_omega": 40.0,
+    "uvc_device_name": "",
+    "uvc_vendor_id": 0,
+    "uvc_product_id": 0,
     "h_min": 13,
     "h_max": 35,
     "s_min": 131,

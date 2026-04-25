@@ -1,10 +1,26 @@
 [tool.taskipy.tasks]
-clean = "echo [CLEAN] Starting... & (if exist dist rd /s /q dist) & (if exist build rd /s /q build) & (if exist *.spec del /q *.spec) & echo [OK] Cleaned."
+# ---------------------------------------------------------------------------
+# Cross-platform tasks (recommended). They delegate to tasks.py so the same
+# `task <name>` works identically on Windows, macOS and Linux.
+# ---------------------------------------------------------------------------
+dev          = "python main.py"
+install      = "python tasks.py install"
+install_uvc  = "python tasks.py install_uvc"
+clean        = "python tasks.py clean"
+buildDev     = "python tasks.py build --debug"
+buildProd    = "python tasks.py build"
 
-dev = "python main.py"
+# ---------------------------------------------------------------------------
+# Platform-specific shell variants (kept for transparency / debugging).
+# Use them only if you really want raw cmd.exe / bash invocations.
+# ---------------------------------------------------------------------------
 
-# Сборка для отладки (с консолью)
-buildDev = "task clean && pyinstaller --noconfirm --onedir --console --name BallTracker_Debug --clean main.py && copy settings.json dist\\BallTracker_Debug\\settings.json"
+# Windows (cmd.exe) ---------------------------------------------------------
+clean_win = "if exist dist rd /s /q dist & if exist build rd /s /q build & for %f in (*.spec) do del /q %f & echo [OK] Cleaned"
+buildDev_win  = "task clean_win && pyinstaller --noconfirm --onedir --console  --name BallTracker_Debug --clean main.py && copy settings.json dist\\BallTracker_Debug\\settings.json"
+buildProd_win = "task clean_win && pyinstaller --noconfirm --onedir --windowed --name BallTrackerPro    --clean main.py && copy settings.json dist\\BallTrackerPro\\settings.json"
 
-# Сборка для работы (без консоли)
-buildProd = "task clean && pyinstaller --noconfirm --onedir --windowed --name BallTrackerPro --clean main.py && copy settings.json dist\\BallTrackerPro\\settings.json"
+# macOS / Linux (bash, zsh) -------------------------------------------------
+clean_mac = "rm -rf dist build *.spec && echo '[OK] Cleaned'"
+buildDev_mac  = "task clean_mac && pyinstaller --noconfirm --onedir --console  --name BallTracker_Debug --clean main.py && cp settings.json dist/BallTracker_Debug/settings.json"
+buildProd_mac = "task clean_mac && pyinstaller --noconfirm --onedir --windowed --name BallTrackerPro    --clean main.py && mkdir -p dist/BallTrackerPro.app/Contents/Resources && cp settings.json dist/BallTrackerPro.app/Contents/Resources/settings.json && cp settings.json dist/BallTrackerPro/settings.json"

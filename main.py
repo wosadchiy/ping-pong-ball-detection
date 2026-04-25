@@ -6,6 +6,7 @@ from config import ConfigStore
 from camera import VideoStream, list_available_cameras # Импорт сканера
 from hardware import ArduinoHandler
 from detector import BallDetector
+from platform_utils import IS_MACOS
 from ui import create_ui, update_texture
 from utils import ema
 
@@ -46,11 +47,17 @@ def main():
     # 1. СНАЧАЛА сканируем камеры (пока никто их не занял)
     available_cams = list_available_cameras()
     print(f"Found cameras: {available_cams}")
-    
+
     # 2. Инициализируем UI (передаем список камер)
     create_ui(store, available_cams)
-    
-    # 3. ТОЛЬКО ТЕПЕРЬ открываем основной поток видео
+
+    # 3. На macOS дать AVFoundation полностью отпустить ручки CoreMedia,
+    #    освобождённые в list_available_cameras(), прежде чем переоткрывать
+    #    тот же индекс в основном потоке.
+    if IS_MACOS:
+        time.sleep(0.5)
+
+    # 4. ТОЛЬКО ТЕПЕРЬ открываем основной поток видео
     vs = VideoStream(src=store.camera_id, store=store).start()
     vs_container = [vs]
     
