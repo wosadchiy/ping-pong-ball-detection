@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>BallTrackerPro — Структурная схема САУ (для MATLAB/Simulink)</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+         sans-serif; margin: 28px auto; max-width: 1280px; padding: 0 20px;
+         background: #131418; color: #e8e8e8; line-height: 1.55; }
+
+  h1 { font-size: 26px; margin: 0 0 4px; font-weight: 600; letter-spacing: -.2px; }
+  h2 { font-size: 20px; margin: 36px 0 12px; padding-bottom: 6px;
+       border-bottom: 1px solid #2a2c33; font-weight: 600; }
+  h3 { font-size: 15px; margin: 18px 0 6px; color: #cdd0d6; font-weight: 600; }
+  p, li { font-size: 14px; color: #c0c4ce; }
+  small { color: #7a7f8b; font-size: 12px; }
+
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace;
+              font-size: 13px; }
+  code { background: #1c1e25; padding: 1px 6px; border-radius: 3px;
+         color: #e0c177; }
+  pre  { background: #0e0f13; border: 1px solid #2a2c33; border-radius: 6px;
+         padding: 14px 18px; overflow-x: auto; line-height: 1.55; color: #d8dde8; }
+
+  .lede { color: #a8acb6; font-size: 14px; max-width: 880px; }
+
+  .diagram { background: #0c0d11; border: 1px solid #2a2c33;
+             border-radius: 8px; padding: 18px; margin: 14px 0; }
+  .diagram svg { display: block; width: 100%; height: auto; }
+
+  .legend { display: flex; gap: 24px; flex-wrap: wrap; font-size: 12px;
+            color: #9298a4; margin-top: 12px; }
+  .legend .sw { display: inline-block; width: 14px; height: 14px;
+                vertical-align: middle; margin-right: 6px; border-radius: 3px;
+                border: 1px solid; }
+  .sw.py  { background: #14233a; border-color: #4d9fff; }
+  .sw.ar  { background: #2a1610; border-color: #ff8c4d; }
+  .sw.ph  { background: #1a1d24; border-color: #8d92a0; }
+  .sw.fb  { background: #2a1f0c; border-color: #ffb84d; }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #23262d;
+           vertical-align: top; }
+  th { color: #8d92a0; font-weight: 600; font-size: 12px;
+       text-transform: uppercase; letter-spacing: .04em; }
+  td code { background: #14161c; }
+
+  .pill { display: inline-block; padding: 1px 8px; font-size: 11px;
+          border-radius: 10px; border: 1px solid; vertical-align: middle;
+          margin-left: 6px; }
+  .pill.py { color: #4d9fff; border-color: #2a5288; background: #0e1a2a; }
+  .pill.ar { color: #ff8c4d; border-color: #84402d; background: #20100b; }
+  .pill.ph { color: #b0b6c4; border-color: #4a4f5b; background: #181a20; }
+
+  .formula { background: #0e0f13; border: 1px solid #2a2c33;
+             border-left: 3px solid #4d9fff; padding: 14px 18px;
+             border-radius: 6px; margin: 12px 0; font-size: 14px;
+             color: #d8dde8; font-family: ui-monospace, monospace; }
+  .formula b { color: #ffcc00; font-weight: 600; }
+
+  .warn { background: #2a1f0c; border: 1px solid #574020; border-left: 3px solid #ffb84d;
+          padding: 12px 16px; border-radius: 6px; margin: 12px 0; font-size: 13px; }
+  .ok   { background: #0d251a; border: 1px solid #1f5a3e; border-left: 3px solid #4dd29a;
+          padding: 12px 16px; border-radius: 6px; margin: 12px 0; font-size: 13px; }
+  .info { background: #0e1a2a; border: 1px solid #2a5288; border-left: 3px solid #4d9fff;
+          padding: 12px 16px; border-radius: 6px; margin: 12px 0; font-size: 13px; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 880px) { .grid2 { grid-template-columns: 1fr; } }
+
+  footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #2a2c33;
+           color: #6c7080; font-size: 12px; }
+  footer a { color: #7ab1f5; }
+</style>
+</head>
+<body>
+
+<h1>BallTrackerPro — Структурная схема САУ</h1>
+<p class="lede">
+  Схема для воссоздания текущей системы управления в MATLAB/Simulink.
+  Показывает полный тракт «ball → camera → Python → USB → Arduino → motor →
+  camera mount → ball-in-frame» с разделением: что считается на хосте, что
+  во встроенном контроллере, что — физика. <b>Сейчас это разомкнутый
+  следящий привод</b>: внешний оптический контур замкнут через камеру, а
+  внутренний контур двигателя <i>полностью открыт</i> — ни датчика
+  положения, ни тахогенератора, ни датчика тока (см. красную пунктирную
+  область на схеме).
+</p>
+
+<div class="info">
+  <b>Связанные документы:</b>
+  <a href="control-system.html">control-system.html</a> — диаграмма потока
+  данных по файлам;
+  <a href="drive-simulator.html">drive-simulator.html</a> — браузерный
+  симулятор драйвера (Timer2 + vel_table) с тремя графиками.
+</div>
+
+<!-- ============================================================ -->
+<!-- STRUCTURAL DIAGRAM                                           -->
+<!-- ============================================================ -->
+
+<h2>1. Структурная схема (текущее состояние)</h2>
+
+<div class="diagram">
+<svg viewBox="0 0 1440 920" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace, Menlo, monospace">
+  <defs>
+    <marker id="ar"    viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a8acb6"/></marker>
+    <marker id="ar-py" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4d9fff"/></marker>
+    <marker id="ar-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff8c4d"/></marker>
+    <marker id="ar-fb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffb84d"/></marker>
+  </defs>
+
+  <!-- ============= PYTHON band  (y = 30 … 250) ============= -->
+  <rect x="20" y="30" width="1400" height="220" rx="12"
+        fill="#0d1521" stroke="#1f3550" stroke-dasharray="4 4"/>
+  <text x="40" y="56" font-size="13" fill="#5d8fc4">PYTHON HOST · capture + logic threads · ~150–200 Hz</text>
+  <text x="40" y="72" font-size="11" fill="#3d6692">детектирование, EMA-фильтр, формирование задания</text>
+
+  <!-- Disturbance arrow + Σ summator (cy = 165) -->
+  <text x="38" y="156" font-size="12" fill="#cdd0d6">θ_ball(t)</text>
+  <text x="38" y="170" font-size="10" fill="#7a7f8b">внешний возмущ. вход</text>
+  <line x1="36" y1="135" x2="68" y2="135" stroke="#a8acb6" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <circle cx="90" cy="135" r="22" fill="#181a20" stroke="#cdd0d6" stroke-width="1.6"/>
+  <text x="90" y="140" text-anchor="middle" font-size="18" fill="#cdd0d6">Σ</text>
+  <text x="62" y="130" font-size="13" fill="#9adba0">+</text>
+  <text x="100" y="173" font-size="13" fill="#ff7b6e">−</text>
+
+  <!-- W_opt -->
+  <g>
+    <rect x="140" y="92" width="170" height="120" rx="8" fill="#14233a" stroke="#4d9fff" stroke-width="1.5"/>
+    <text x="225" y="113" text-anchor="middle" font-size="12" fill="#7ab1f5">W_опт(s)</text>
+    <text x="225" y="142" text-anchor="middle" font-size="13" fill="#e0c177">K_л  [px/рад]</text>
+    <text x="225" y="166" text-anchor="middle" font-size="11" fill="#a8b3c5">(w/2) / (FOV_x/2)</text>
+    <text x="225" y="186" text-anchor="middle" font-size="11" fill="#a8b3c5">≈ 539 px / рад</text>
+    <text x="225" y="204" text-anchor="middle" font-size="10" fill="#7a7f8b">FOV 68°×46°</text>
+  </g>
+
+  <!-- W_det -->
+  <g>
+    <rect x="330" y="92" width="170" height="120" rx="8" fill="#14233a" stroke="#4d9fff" stroke-width="1.5"/>
+    <text x="415" y="113" text-anchor="middle" font-size="12" fill="#7ab1f5">W_дет(s)</text>
+    <text x="415" y="142" text-anchor="middle" font-size="13" fill="#e0c177">K_д · e^(−τ_д·s)</text>
+    <text x="415" y="166" text-anchor="middle" font-size="11" fill="#a8b3c5">HSV → minEnclosingCircle</text>
+    <text x="415" y="186" text-anchor="middle" font-size="11" fill="#a8b3c5">τ_д ≈ 5–10 мс</text>
+    <text x="415" y="204" text-anchor="middle" font-size="10" fill="#7a7f8b">+ ZOH 1/FPS_кам</text>
+  </g>
+
+  <!-- W_ema -->
+  <g>
+    <rect x="520" y="92" width="170" height="120" rx="8" fill="#14233a" stroke="#4d9fff" stroke-width="1.5"/>
+    <text x="605" y="113" text-anchor="middle" font-size="12" fill="#7ab1f5">W_ф(z) — EMA</text>
+    <text x="605" y="142" text-anchor="middle" font-size="13" fill="#e0c177">α / (1 − (1−α)·z⁻¹)</text>
+    <text x="605" y="166" text-anchor="middle" font-size="11" fill="#a8b3c5">α = 0.25</text>
+    <text x="605" y="186" text-anchor="middle" font-size="11" fill="#a8b3c5">T_ф ≈ 27 мс @150 Hz</text>
+    <text x="605" y="204" text-anchor="middle" font-size="10" fill="#7a7f8b">≈ 67 мс @60 Hz камера</text>
+  </g>
+
+  <!-- W_tx -->
+  <g>
+    <rect x="710" y="92" width="170" height="120" rx="8" fill="#14233a" stroke="#4d9fff" stroke-width="1.5"/>
+    <text x="795" y="113" text-anchor="middle" font-size="12" fill="#7ab1f5">W_тх(s) — Serial TX</text>
+    <text x="795" y="142" text-anchor="middle" font-size="13" fill="#e0c177">e^(−τ_тх·s)</text>
+    <text x="795" y="166" text-anchor="middle" font-size="11" fill="#a8b3c5">115 200 baud, 30 байт</text>
+    <text x="795" y="186" text-anchor="middle" font-size="11" fill="#a8b3c5">τ_тх ≈ 3–4 мс</text>
+    <text x="795" y="204" text-anchor="middle" font-size="10" fill="#7a7f8b">"ax,ay,nx,ny,…\n"</text>
+  </g>
+
+  <!-- ConfigStore (sidecar) -->
+  <g>
+    <rect x="910" y="78" width="490" height="156" rx="8" fill="#21241c" stroke="#c8b85a" stroke-width="1.2" stroke-dasharray="4 3"/>
+    <text x="1155" y="102" text-anchor="middle" font-size="13" fill="#e0e6c8">ConfigStore (UI sliders → settings.json)</text>
+    <text x="1155" y="126" text-anchor="middle" font-size="11" fill="#bcc1aa">kp · max_omega · is_tracking · accel</text>
+    <text x="1155" y="146" text-anchor="middle" font-size="11" fill="#bcc1aa">manual_omega_active · manual_omega</text>
+    <text x="1155" y="166" text-anchor="middle" font-size="11" fill="#bcc1aa">h/s/v · exposure · camera_id</text>
+    <text x="1155" y="190" text-anchor="middle" font-size="10" fill="#a39c75">→ 7-полевой CSV в каждом пакете</text>
+    <text x="1155" y="208" text-anchor="middle" font-size="10" fill="#a39c75">→ A/M/O команды по изменению</text>
+  </g>
+
+  <!-- inter-block arrows in Python band, all at y=152 -->
+  <line x1="112" y1="152" x2="138" y2="152" stroke="#4d9fff" stroke-width="1.6" marker-end="url(#ar-py)"/>
+  <text x="125" y="146" text-anchor="middle" font-size="10" fill="#7ab1f5">e_θ</text>
+  <line x1="310" y1="152" x2="328" y2="152" stroke="#4d9fff" stroke-width="1.6" marker-end="url(#ar-py)"/>
+  <text x="319" y="146" text-anchor="middle" font-size="10" fill="#7ab1f5">px</text>
+  <line x1="500" y1="152" x2="518" y2="152" stroke="#4d9fff" stroke-width="1.6" marker-end="url(#ar-py)"/>
+  <text x="509" y="146" text-anchor="middle" font-size="10" fill="#7ab1f5">dx</text>
+  <line x1="690" y1="152" x2="708" y2="152" stroke="#4d9fff" stroke-width="1.6" marker-end="url(#ar-py)"/>
+  <text x="699" y="146" text-anchor="middle" font-size="10" fill="#7ab1f5">nx</text>
+
+  <!-- W_tx → USB drop -->
+  <line x1="795" y1="212" x2="795" y2="262" stroke="#4d9fff" stroke-width="1.6"/>
+
+  <!-- ConfigStore → detector + sender (dashed yellow) -->
+  <line x1="910" y1="155" x2="880" y2="155" stroke="#c8b85a" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#ar)"/>
+  <line x1="910" y1="180" x2="690" y2="180" stroke="#c8b85a" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#ar)"/>
+
+  <!-- ============= USB GAP (y = 250 … 360) ============= -->
+  <text x="810" y="282" font-size="12" fill="#9298a4">USB · 115 200 baud</text>
+  <text x="810" y="298" font-size="10" fill="#6c7080">~700 пакетов/с (Logic FPS)</text>
+  <line x1="795" y1="262" x2="795" y2="362" stroke="#8d92a0" stroke-width="1.6" stroke-dasharray="2 4" marker-end="url(#ar)"/>
+
+  <!-- ============= ARDUINO band  (y = 350 … 770) ============= -->
+  <rect x="20" y="350" width="1400" height="420" rx="12"
+        fill="#1d100b" stroke="#572d1c" stroke-dasharray="4 4"/>
+  <text x="40" y="376" font-size="13" fill="#cf8b6c">ARDUINO MCU · loop() ~ кГц + Timer2 ISR @ 1 кГц + Timer1 hardware step PWM</text>
+  <text x="40" y="392" font-size="11" fill="#925441">внутренний контур привода — открытый: датчиков обратной связи нет</text>
+
+  <!-- W_rx (parser) -->
+  <g>
+    <rect x="710" y="412" width="170" height="118" rx="8" fill="#2a1610" stroke="#ff8c4d" stroke-width="1.5"/>
+    <text x="795" y="434" text-anchor="middle" font-size="12" fill="#f0a07c">W_rx — parser</text>
+    <text x="795" y="463" text-anchor="middle" font-size="11" fill="#d4b4a4">parseIncomingData()</text>
+    <text x="795" y="483" text-anchor="middle" font-size="11" fill="#d4b4a4">indexOf(',') × 6</text>
+    <text x="795" y="505" text-anchor="middle" font-size="11" fill="#e0c177">→ normX, K_p, ω_max</text>
+  </g>
+
+  <!-- W_norm -->
+  <g>
+    <rect x="520" y="412" width="170" height="118" rx="8" fill="#2a1610" stroke="#ff8c4d" stroke-width="1.5"/>
+    <text x="605" y="434" text-anchor="middle" font-size="12" fill="#f0a07c">W_норм — нормировка</text>
+    <text x="605" y="468" text-anchor="middle" font-size="13" fill="#e0c177">err = nx / L</text>
+    <text x="605" y="490" text-anchor="middle" font-size="11" fill="#d4b4a4">L = 320 px</text>
+    <text x="605" y="510" text-anchor="middle" font-size="11" fill="#d4b4a4">err ∈ [−1; +1]</text>
+  </g>
+
+  <!-- W_p -->
+  <g>
+    <rect x="330" y="412" width="170" height="118" rx="8" fill="#2a1610" stroke="#ff8c4d" stroke-width="1.5"/>
+    <text x="415" y="434" text-anchor="middle" font-size="12" fill="#f0a07c">W_р — П-регулятор</text>
+    <text x="415" y="468" text-anchor="middle" font-size="13" fill="#e0c177">K_p · ω_max</text>
+    <text x="415" y="490" text-anchor="middle" font-size="11" fill="#d4b4a4">K_p = 0.45 (предел уст.)</text>
+    <text x="415" y="510" text-anchor="middle" font-size="11" fill="#d4b4a4">ω_max = 100 user/c</text>
+  </g>
+
+  <!-- W_sat -->
+  <g>
+    <rect x="140" y="412" width="170" height="118" rx="8" fill="#2a1610" stroke="#ff8c4d" stroke-width="1.5"/>
+    <text x="225" y="434" text-anchor="middle" font-size="12" fill="#f0a07c">W_sat — насыщение</text>
+    <text x="225" y="468" text-anchor="middle" font-size="13" fill="#e0c177">clamp(±ω_max)</text>
+    <text x="225" y="490" text-anchor="middle" font-size="11" fill="#d4b4a4">срез при K_p·|err|&gt;1</text>
+    <text x="225" y="510" text-anchor="middle" font-size="11" fill="#d4b4a4">→ ω_t ∈ [−ω_max; +ω_max]</text>
+  </g>
+
+  <!-- top row arrows (right → left at y=470) -->
+  <line x1="710" y1="470" x2="692" y2="470" stroke="#ff8c4d" stroke-width="1.6" marker-end="url(#ar-ar)"/>
+  <text x="700" y="463" text-anchor="middle" font-size="10" fill="#ffb877">normX</text>
+  <line x1="520" y1="470" x2="502" y2="470" stroke="#ff8c4d" stroke-width="1.6" marker-end="url(#ar-ar)"/>
+  <text x="511" y="463" text-anchor="middle" font-size="10" fill="#ffb877">err</text>
+  <line x1="330" y1="470" x2="312" y2="470" stroke="#ff8c4d" stroke-width="1.6" marker-end="url(#ar-ar)"/>
+  <text x="321" y="463" text-anchor="middle" font-size="10" fill="#ffb877">ω_t</text>
+
+  <!-- USB arrow into top of W_rx -->
+  <line x1="795" y1="362" x2="795" y2="410" stroke="#ff8c4d" stroke-width="1.6" marker-end="url(#ar-ar)"/>
+
+  <!-- W_sat → drop down to row 2, jog into W_ramp -->
+  <line x1="225" y1="530" x2="225" y2="568" stroke="#ff8c4d" stroke-width="1.6"/>
+  <line x1="225" y1="568" x2="280" y2="568" stroke="#ff8c4d" stroke-width="1.6"/>
+  <line x1="280" y1="568" x2="280" y2="600" stroke="#ff8c4d" stroke-width="1.6" marker-end="url(#ar-ar)"/>
+
+  <!-- "open inner loop" highlight box (Arduino motor blocks only) -->
+  <rect x="195" y="585" width="715" height="155" rx="10"
+        fill="none" stroke="#ff7b6e" stroke-width="1.4" stroke-dasharray="6 5"/>
+  <text x="552" y="580" text-anchor="middle" font-size="12" fill="#ff9c94" font-weight="bold">
+    ВНУТРЕННИЙ КОНТУР ПРИВОДА — РАЗОМКНУТ: нет энкодера / тахогенератора / датчика тока
+  </text>
+
+  <!-- W_ramp -->
+  <g>
+    <rect x="200" y="600" width="200" height="125" rx="8" fill="#2a1610" stroke="#ff8c4d" stroke-width="1.5"/>
+    <text x="300" y="622" text-anchor="middle" font-size="12" fill="#f0a07c">W_ramp — ограничитель</text>
+    <text x="300" y="650" text-anchor="middle" font-size="11" fill="#a8b3c5">Timer2 ISR @ 1 кГц</text>
+    <text x="300" y="672" text-anchor="middle" font-size="13" fill="#e0c177">|dω/dt| ≤ α</text>
+    <text x="300" y="694" text-anchor="middle" font-size="11" fill="#d4b4a4">α = 500 user/с² (предел)</text>
+    <text x="300" y="713" text-anchor="middle" font-size="10" fill="#7a7f8b">α = ω_max·1000 / (N·skip)</text>
+  </g>
+
+  <!-- W_pulse -->
+  <g>
+    <rect x="430" y="600" width="220" height="125" rx="8" fill="#2a1610" stroke="#ff8c4d" stroke-width="1.5"/>
+    <text x="540" y="622" text-anchor="middle" font-size="12" fill="#f0a07c">W_pulse — генератор T(ω)</text>
+    <text x="540" y="652" text-anchor="middle" font-size="13" fill="#e0c177">T = 11172 / |ω|  [мкс]</text>
+    <text x="540" y="675" text-anchor="middle" font-size="11" fill="#a8b3c5">vel_table[N=200]  (нелин.)</text>
+    <text x="540" y="694" text-anchor="middle" font-size="11" fill="#d4b4a4">f_step = 89.5·|ω| Hz</text>
+    <text x="540" y="713" text-anchor="middle" font-size="10" fill="#7a7f8b">Timer1 CTC + COM1A0</text>
+  </g>
+
+  <!-- W_step -->
+  <g>
+    <rect x="680" y="600" width="220" height="125" rx="8" fill="#2a1610" stroke="#ff8c4d" stroke-width="1.5"/>
+    <text x="790" y="622" text-anchor="middle" font-size="12" fill="#f0a07c">W_шд — шаговый двигатель</text>
+    <text x="790" y="652" text-anchor="middle" font-size="13" fill="#e0c177">θ̇_вал = (2π/N_step)·f_step</text>
+    <text x="790" y="675" text-anchor="middle" font-size="11" fill="#a8b3c5">N_step = 200·μ (микрошаг)</text>
+    <text x="790" y="694" text-anchor="middle" font-size="11" fill="#d4b4a4">допущ.: без потерь шагов</text>
+    <text x="790" y="713" text-anchor="middle" font-size="10" fill="#7a7f8b">DIR = sign(ω), EN — авто</text>
+  </g>
+
+  <!-- W_kin (physical block, gray; sits in the right of Arduino band) -->
+  <g>
+    <rect x="940" y="600" width="290" height="125" rx="8" fill="#1a1d24" stroke="#8d92a0" stroke-width="1.5"/>
+    <text x="1085" y="622" text-anchor="middle" font-size="12" fill="#cdd0d6">W_кин — крепление камеры</text>
+    <text x="1085" y="652" text-anchor="middle" font-size="13" fill="#e0c177">θ_cam(s) = (1/i_red)·(1/s)·θ̇_вал</text>
+    <text x="1085" y="675" text-anchor="middle" font-size="11" fill="#a8b3c5">интегратор → угол камеры</text>
+    <text x="1085" y="694" text-anchor="middle" font-size="11" fill="#a8b3c5">i_red — редуктор / прямой вал</text>
+    <text x="1085" y="713" text-anchor="middle" font-size="10" fill="#7a7f8b">J, упругость, трение → в M.</text>
+  </g>
+
+  <!-- bottom row arrows (left → right at y=662) -->
+  <line x1="400" y1="662" x2="428" y2="662" stroke="#ff8c4d" stroke-width="1.6" marker-end="url(#ar-ar)"/>
+  <text x="414" y="656" text-anchor="middle" font-size="10" fill="#ffb877">ω</text>
+  <line x1="650" y1="662" x2="678" y2="662" stroke="#ff8c4d" stroke-width="1.6" marker-end="url(#ar-ar)"/>
+  <text x="664" y="656" text-anchor="middle" font-size="10" fill="#ffb877">импульсы</text>
+  <line x1="900" y1="662" x2="938" y2="662" stroke="#a8acb6" stroke-width="1.6" marker-end="url(#ar)"/>
+  <text x="919" y="656" text-anchor="middle" font-size="10" fill="#cdd0d6">θ̇_вал</text>
+
+  <!-- Manual override sidebar -->
+  <g>
+    <rect x="40" y="600" width="130" height="125" rx="6" fill="#0e0f13" stroke="#5d626d" stroke-width="1"/>
+    <text x="105" y="624" text-anchor="middle" font-size="11" fill="#cdd0d6">manual override</text>
+    <text x="105" y="648" text-anchor="middle" font-size="10" fill="#a8b3c5">jog btn  D7, D12</text>
+    <text x="105" y="668" text-anchor="middle" font-size="10" fill="#a8b3c5">M / O cmds</text>
+    <text x="105" y="688" text-anchor="middle" font-size="10" fill="#a8b3c5">watchdog</text>
+    <text x="105" y="708" text-anchor="middle" font-size="10" fill="#a8b3c5">timeout 250 ms</text>
+  </g>
+  <line x1="170" y1="662" x2="198" y2="662" stroke="#5d626d" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#ar)"/>
+
+  <!-- ============= PHYSICAL band  (y = 770 … 880) ============= -->
+  <rect x="20" y="780" width="1400" height="100" rx="12"
+        fill="#0f1115" stroke="#3a3f4a" stroke-dasharray="4 4"/>
+  <text x="40" y="804" font-size="13" fill="#a8acb6">PHYSICAL · оптика+механика · замыкание контура через камеру</text>
+
+  <!-- θ_cam exit downward to physical band -->
+  <line x1="1085" y1="725" x2="1085" y2="822" stroke="#a8acb6" stroke-width="1.6"/>
+  <text x="1098" y="772" font-size="11" fill="#cdd0d6">θ_cam</text>
+
+  <!-- Output to outside system -->
+  <line x1="1230" y1="662" x2="1300" y2="662" stroke="#a8acb6" stroke-width="1.6" marker-end="url(#ar)"/>
+  <text x="1300" y="654" font-size="11" fill="#cdd0d6" text-anchor="end">→ выход системы</text>
+
+  <!-- Long feedback path: θ_cam → west outside bands → up far-left → enter Σ from below -->
+  <path d="M 1085,822 L 1085,855 L 12,855 L 12,250 L 90,250 L 90,159"
+        fill="none" stroke="#ffb84d" stroke-width="1.8"
+        stroke-dasharray="6 4" marker-end="url(#ar-fb)"/>
+  <text x="600" y="876" text-anchor="middle" font-size="12" fill="#ffb84d">
+    визуальная обратная связь — единственный замкнутый контур (камера видит сдвиг мяча в кадре, обусловленный поворотом крепления)
+  </text>
+  <text x="6" y="500" font-size="11" fill="#ffb84d" transform="rotate(-90 6 500)">θ_cam · feedback</text>
+</svg>
+
+<div class="legend">
+  <span><span class="sw py"></span>Python host (CV, фильтрация, формирование задания)</span>
+  <span><span class="sw ar"></span>Arduino MCU (parser, П-регулятор, ramp, step driver)</span>
+  <span><span class="sw ph"></span>Физика (механика, оптика, ball-в-кадре)</span>
+  <span><span class="sw fb"></span>Визуальная обратная связь (единственная замкнутая)</span>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- LATENCY BUDGET                                               -->
+<!-- ============================================================ -->
+
+<h2>2. Полная задержка системы (latency budget)</h2>
+
+<p>
+  Это время от «мяч сместился в реальности» до «мотор начал отрабатывать
+  смещение». Складывается из последовательных задержек по тракту прямого
+  хода. Указаны чистые задержки (transport delay) и эквивалентные
+  задержки фильтров первого порядка.
+</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Звено</th>
+      <th>Источник</th>
+      <th>τ @120 FPS / 150 Hz logic</th>
+      <th>τ @60 FPS / 90 Hz logic</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Камера (экспозиция + USB-кадр)</td>
+      <td>1 / FPS_cam</td>
+      <td>~ 8 мс</td>
+      <td>~ 17 мс</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>OpenCV: blur+HSV+morph+contour+circle</td>
+      <td>профилировано на host</td>
+      <td>~ 5 мс</td>
+      <td>~ 8 мс</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>EMA-фильтр (эквив. T_ф = T_s·(1−α)/α)</td>
+      <td>α=0.25, T_s=1/FPS_logic</td>
+      <td>~ 20 мс</td>
+      <td>~ 33 мс</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Serial TX (30 байт ÷ 11520 байт/с + jitter)</td>
+      <td>UART 115200 baud</td>
+      <td>~ 4 мс</td>
+      <td>~ 4 мс</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Arduino loop() + parser</td>
+      <td>измерено на DEBUG_RX_PULSE D8</td>
+      <td>~ 1 мс</td>
+      <td>~ 1 мс</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Timer2 ramp до новой ω (одна ISR-итерация)</td>
+      <td>1 кГц tick</td>
+      <td>~ 1 мс</td>
+      <td>~ 1 мс</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Timer1 → импульс на драйвер (HW PWM)</td>
+      <td>аппаратный, без джиттера</td>
+      <td>≪ 1 мс</td>
+      <td>≪ 1 мс</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Механика мотора (нарастание тока в обмотке)</td>
+      <td>L/R обмотки шагового</td>
+      <td>~ 1–2 мс</td>
+      <td>~ 1–2 мс</td>
+    </tr>
+    <tr style="background:#0d251a;">
+      <td colspan="3" style="text-align:right;"><b>Σ полная задержка (от мяча до момента на валу):</b></td>
+      <td><b style="color:#7af0a8;">≈ 40 мс</b></td>
+      <td><b style="color:#ffb86b;">≈ 65 мс</b></td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="warn">
+  <b>+ дополнительный «лаг разгона» поверх этого бюджета:</b> при больших
+  командных скачках ω (например, мяч резко сдвинулся к краю кадра) Timer2
+  ramp ещё <i>не сразу</i> доводит мотор до целевой скорости — ограничение
+  α = 500 user/с² означает, что от 0 до ω_max=100 уходит дополнительно
+  <code>100/500 = 200 мс</code>. Это <b>не задержка в смысле transport
+  delay</b> (фаза не сдвигается на эту величину для малых синусоидальных
+  возмущений), но она режет полосу пропускания контура и проявляется как
+  дополнительное запаздывание на больших шагах.
+</div>
+
+<div class="info">
+  <b>Что значит «отставание красного крестика», которое ты видишь:</b><br>
+  Красный крестик визуализирует <code>(f_nx, f_ny)</code> — выход EMA. То есть
+  он показывает <b>именно</b> задержку звена № 3 (плюс маленький вклад от
+  №1+2). Лаг звеньев 4–8 крестиком не виден — он влияет только на
+  поведение мотора. Поэтому когда жёлтый круг (детекция) и красный
+  крестик (EMA) расходятся на 5–10 px при движении мяча — это ровно
+  фазовое запаздывание EMA на текущей частоте мяча.
+</div>
+
+<h3>Запас по фазе и предел K_p</h3>
+
+<div class="formula">
+  <b>На частоте gain crossover</b> ω_c (где |L(jω)|=1) запас по фазе:<br><br>
+  φ_m ≈ 90° − arctan(ω_c · T_ф) − ω_c · τ_pure_delay<br><br>
+  τ_pure_delay = τ_кам + τ_дет + τ_тх + τ_ard ≈ 18 мс @120 FPS<br>
+  T_ф ≈ 20 мс @150 Hz logic<br><br>
+  При <b>K_p = 0.45</b> расчётная ω_c ≈ 12–15 рад/с, что даёт
+  φ_m ≈ 25–35° — на грани классического «запаса 30–45°». Это и есть
+  экспериментально наблюдаемый предел устойчивости.
+</div>
+
+<div class="ok">
+  <b>Главный вывод по задержкам:</b> 50–60 % всей задержки сидит в EMA
+  (звено №3). Уменьшение её — самый дешёвый способ поднять ω_c и
+  следовательно K_p. Камера + USB + Arduino дают суммарно всего ~15 мс
+  (на Windows@120 FPS), их трогать не надо.
+</div>
+
+<!-- ============================================================ -->
+<!-- 3. Параметры                                                 -->
+<!-- ============================================================ -->
+
+<h2>3. Текущие параметры (то что сейчас в коде)</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Обозн.</th><th>Значение</th><th>Где живёт</th><th>Комментарий</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>K_p</code></td>
+      <td>0.45 <small>(предел уст.)</small></td>
+      <td>UI слайдер → <code>config.kp</code> → CSV → ino</td>
+      <td>Пропорциональный коэф.; выше — раскачка из-за фазового запаздывания контура</td>
+    </tr>
+    <tr>
+      <td><code>ω_max</code></td>
+      <td>100 user/с</td>
+      <td>UI слайдер → <code>config.max_omega</code> → CSV → ino</td>
+      <td>Аппаратный потолок скорости вала; через таблицу <code>vel_table[]</code></td>
+    </tr>
+    <tr>
+      <td><code>α</code> (acceleration)</td>
+      <td>500 user/с²</td>
+      <td><code>config.accel</code> → <code>A&lt;...&gt;\n</code> → ino</td>
+      <td>Ramp-rate в Timer2 ISR; α_max ≈ ω_max·5</td>
+    </tr>
+    <tr>
+      <td><code>α</code> (EMA)</td>
+      <td>0.25</td>
+      <td><code>BallDetector.alpha</code></td>
+      <td>Сглаживание <code>nx,ny</code>. T_ф ≈ 27 мс при 150 Hz Logic</td>
+    </tr>
+    <tr>
+      <td><code>L</code> = SENSOR_HALF_WIDTH_PX</td>
+      <td>320 px</td>
+      <td>const в <code>cameraControl.ino</code></td>
+      <td>Делитель пиксельной ошибки → нормировка err ∈ [−1; +1]</td>
+    </tr>
+    <tr>
+      <td><code>K_л</code> (lens)</td>
+      <td>≈ 539 px/рад</td>
+      <td>геометрия камеры</td>
+      <td>w/2 ÷ FOV_x/2 = 320/(34°·π/180)</td>
+    </tr>
+    <tr>
+      <td><code>FOV</code></td>
+      <td>68° × 46°</td>
+      <td><code>BallDetector.FOV_X/Y</code></td>
+      <td>Объектив ELP USBGS1200P02-LC1100</td>
+    </tr>
+    <tr>
+      <td><code>frame</code></td>
+      <td>640 × 480 @ 60–120 FPS</td>
+      <td><code>VideoStream</code></td>
+      <td>FPS зависит от ОС/USB; на macOS обычно 60, Win 120</td>
+    </tr>
+    <tr>
+      <td><code>Logic FPS</code></td>
+      <td>~150–200 Hz</td>
+      <td><code>main.logic_thread_func</code></td>
+      <td>Может re-обрабатывать тот же кадр</td>
+    </tr>
+    <tr>
+      <td><code>baud</code></td>
+      <td>115 200</td>
+      <td><code>ArduinoHandler</code></td>
+      <td>≈ 30 байт/пакет → запас по пропуск. способности</td>
+    </tr>
+    <tr>
+      <td><code>τ_тх</code></td>
+      <td>3–4 мс</td>
+      <td>USB serial</td>
+      <td>30 байт ÷ 11520 байт/с</td>
+    </tr>
+    <tr>
+      <td><code>watchdog</code></td>
+      <td>250 мс</td>
+      <td><code>cameraControl.ino:timeout_ms</code></td>
+      <td>Молчание Python → ω = 0, безопасный останов</td>
+    </tr>
+    <tr>
+      <td><code>V_TABLE_N</code></td>
+      <td>200</td>
+      <td><code>cameraControl.ino</code></td>
+      <td>Дискретизация скорости (idx ∈ −N..+N)</td>
+    </tr>
+    <tr>
+      <td><code>OCR1A(ω)</code></td>
+      <td>11172/|ω| [мкс]</td>
+      <td><code>rebuild_vel_table()</code></td>
+      <td>Калибровка: 1 user-unit ≈ 89.5 step/с</td>
+    </tr>
+    <tr>
+      <td><code>i_red, J, μ_step</code></td>
+      <td>—</td>
+      <td>физика (не в коде)</td>
+      <td>Передаточное число, момент инерции, микрошаг — задать в M./Simulink</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<!-- 3. Передаточные функции для прямого ввода в MATLAB             -->
+<!-- ============================================================ -->
+
+<h2>4. Передаточные функции (готовы для MATLAB/Simulink)</h2>
+
+<p>
+  Для непрерывной аппроксимации (прототипирование в s-области). Все «z-блоки»
+  ниже сначала записаны дискретно (как в коде), потом — их непрерывный
+  эквивалент через <code>c2d</code>/<code>d2c</code>. Для шаговика
+  предполагается идеальное преобразование «команда ω → угол» без потери
+  шагов — так система получается чисто кинематической.
+</p>
+
+<div class="grid2">
+
+<div class="formula" style="border-left-color:#4d9fff;">
+  <b>W_опт(s) = K_л</b> &nbsp;<small>статическая, 539 px/рад</small><br><br>
+  K_л = (w/2) / (FOV_x/2) = 320 / (34·π/180)<br>
+  ≈ <b>539.0 px/рад</b>
+</div>
+
+<div class="formula" style="border-left-color:#4d9fff;">
+  <b>W_дет(s) ≈ K_д · e^(−τ_д·s) · ZOH(T_к)</b><br><br>
+  K_д = 1 (камера+OpenCV выдают пиксели 1:1)<br>
+  τ_д ≈ 5–10 мс  (HSV+morph+contour)<br>
+  T_к = 1/FPS_cam ≈ 11–17 мс  (квантование)
+</div>
+
+<div class="formula" style="border-left-color:#4d9fff;">
+  <b>W_ф(z) = α / (1 − (1−α)·z⁻¹)</b><br><br>
+  α = 0.25, T_s = 1/FPS_logic<br>
+  Эквивалент: <b>W_ф(s) ≈ 1 / (T_ф·s + 1)</b><br>
+  T_ф = T_s · (1−α)/α ≈ 27 мс @150 Hz
+</div>
+
+<div class="formula" style="border-left-color:#4d9fff;">
+  <b>W_тх(s) = e^(−τ_тх·s)</b> &nbsp;<small>чистое запаздывание</small><br><br>
+  τ_тх ≈ 30 байт / 11520 (байт/с) = <b>2.6 мс</b><br>
+  + jitter ОС-планировщика → ≈ 3–4 мс
+</div>
+
+<div class="formula" style="border-left-color:#ff8c4d;">
+  <b>W_норм(s) = 1 / L</b> &nbsp;<small>статическая</small><br><br>
+  L = 320 px<br>
+  err = nx / 320 ∈ [−1; +1]
+</div>
+
+<div class="formula" style="border-left-color:#ff8c4d;">
+  <b>W_р(s) = K_p · ω_max</b> &nbsp;<small>П-регулятор</small><br><br>
+  K_p ∈ [0; 5], ω_max ∈ [0; 100]<br>
+  ω_t = err · K_p · ω_max
+</div>
+
+<div class="formula" style="border-left-color:#ff8c4d;">
+  <b>W_sat: ω_t → ω_t' = clamp(ω_t, ±ω_max)</b><br><br>
+  Жёсткое насыщение, не передаточная — нелинейность.<br>
+  В Simulink: блок <code>Saturation</code> с пределами ±ω_max.
+</div>
+
+<div class="formula" style="border-left-color:#ff8c4d;">
+  <b>W_ramp:</b> rate-limiter с производной ≤ α<br><br>
+  В Simulink: блок <code>Rate Limiter</code><br>
+  Rising/Falling slew rate = ±α user/с²<br>
+  α = ω_max·1000/(V_TABLE_N · accel_skip)<br>
+  α ∈ [≈ 2; 500] user/с² при ω_max=100
+</div>
+
+<div class="formula" style="border-left-color:#ff8c4d;">
+  <b>W_pulse:</b> ω → f_step = 89.5·|ω|  [Hz]<br><br>
+  Нелинейность: T = 11172/|ω| [мкс]<br>
+  В Simulink: <code>Lookup Table</code> по vel_table[]<br>
+  Для непр. аппроксимации: f_step = K_step·ω, K_step = 89.5
+</div>
+
+<div class="formula" style="border-left-color:#ff8c4d;">
+  <b>W_шд(s):</b> идеальный шаговик<br><br>
+  θ̇_вал = (2π/N_step) · f_step<br>
+  N_step = 200 · μ_step  (μ — микрошаг, ≈ 1/16 типично)<br>
+  → K_шд = (2π·89.5)/(200·μ_step) рад/с / user-unit
+</div>
+
+<div class="formula" style="border-left-color:#8d92a0;">
+  <b>W_кин(s) = (1/i_red) · (1/s)</b><br><br>
+  Интегратор: θ_cam = ∫θ̇_вал · dt / i_red<br>
+  i_red — передаточное отношение (1 при прямом креплении)<br>
+  Динамика инерции J опущена (шаговик «идеален»)
+</div>
+
+<div class="formula" style="border-left-color:#ffb84d;">
+  <b>Замыкание контура (визуальное):</b><br><br>
+  e_θ = θ_ball − θ_cam<br>
+  px = K_л · e_θ → детектор → EMA → … → мотор → θ_cam → ⊕<br>
+  Полный разомкнутый коэф. усиления на низких частотах:<br>
+  <b>K_loop = K_л · K_д · 1 · (1/L) · K_p · ω_max · K_шд · 1</b>
+</div>
+
+</div>
+
+<h3>Полный передаточный коэффициент (s-область, низкие ω)</h3>
+
+<div class="formula">
+  <b>W_open(s)</b> = W_тх · W_ф · W_дет · W_опт &nbsp;&nbsp;<i>(хост)</i><br>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;× (1/L) · K_p · ω_max · W_sat · W_ramp · W_pulse · W_шд · W_кин &nbsp;<i>(MCU+физика)</i><br><br>
+  Без насыщения и при «небольшом» сигнале (W_sat=1, W_ramp=1):<br>
+  <b>W_open(s) ≈ K_loop · e^(−τ·s) / [(T_ф·s + 1) · s]</b><br>
+  где τ = τ_д + τ_тх ≈ 8–14 мс,
+  T_ф ≈ 27–67 мс (зависит от FPS),<br>
+  K_loop = K_л · (1/L) · K_p · ω_max · (2π · 89.5 / (N_step · i_red)).
+</div>
+
+<!-- ============================================================ -->
+<!-- 4. Что разомкнуто и что добавить                              -->
+<!-- ============================================================ -->
+
+<h2>5. Что разомкнуто, что нужно добавить для классической трёхконтурной схемы</h2>
+
+<p>
+  В твоём втором скриншоте показана типовая структура цифрового
+  следящего привода с тремя вложенными контурами регуляторов. Сравним:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Контур</th><th>Классика (скриншот)</th><th>У нас сейчас</th><th>Что нужно</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Тока (внутренний)</td>
+      <td><code>W_рт</code> + датчик <code>K_от</code></td>
+      <td><b>отсутствует</b> — драйвер шаговика отрабатывает ток сам, в open-loop по фазам</td>
+      <td>В шаговике с Step/Dir драйвером недоступно. Если перейти на BLDC + FOC — добавится автоматически.</td>
+    </tr>
+    <tr>
+      <td>Скорости</td>
+      <td><code>W_рс</code> + ТГ <code>K_ос</code></td>
+      <td><b>отсутствует</b> — Arduino отправляет открытое задание ω, шаговик «обязан» выдержать</td>
+      <td>Энкодер на валу + дифференцирование угла (либо тахогенератор) → внутренний ПИ-контур скорости</td>
+    </tr>
+    <tr>
+      <td>Положения</td>
+      <td><code>W_рп</code> + энкодер <code>K_оп</code></td>
+      <td><b>отсутствует</b> локально на валу; есть «оптическое замещение» через камеру</td>
+      <td>Абсолютный энкодер вала (или интеграл импульсов с поправкой на пропуски)</td>
+    </tr>
+    <tr>
+      <td>Слежения (внешний)</td>
+      <td>—</td>
+      <td>есть: <b>камера → П-регулятор</b> с большой задержкой (EMA + камера + USB)</td>
+      <td>Это и есть наш «следящий контур». Запас по фазе ограничен суммой задержек выше.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="warn">
+  <b>Поэтому сейчас система — «следящий привод с разомкнутыми
+  внутренними контурами»:</b> единственная обратная связь — оптическая
+  через камеру. Все динамические свойства мотора (инерция, упругость
+  ремня, момент нагрузки) ничем не компенсируются — они напрямую
+  подмешиваются в фазу внешнего контура.
+</div>
+
+<h3>Куда расти</h3>
+<ul>
+  <li><b>Минимум для замкнутого скоростного контура:</b> энкодер AS5048
+    или AMT102 на вал → второй UART/SPI на Arduino → ПИ по ошибке
+    скорости → новая <code>W_рс(s)</code>. Заменит «доверие шаговику».</li>
+  <li><b>D-член в текущем П-регуляторе:</b> разовое решение для
+    стабильности без датчиков (D от пиксельной ошибки). 1 час работы,
+    +50% по K_p.</li>
+  <li><b>Velocity feed-forward:</b> Python считает <code>d(nx)/dt</code>
+    и отправляет 8-м полем; Arduino добавляет в команду ω. Снимает с
+    П-контура задачу «догонять движущийся мяч».</li>
+  <li><b>Smith predictor:</b> если в MATLAB модель окажется хорошей,
+    можно компенсировать чистое запаздывание τ_д+τ_тх внутри хоста.</li>
+</ul>
+
+<!-- ============================================================ -->
+<!-- 5. Подсказки для Simulink                                    -->
+<!-- ============================================================ -->
+
+<h2>6. Подсказки для Simulink-модели</h2>
+
+<div class="grid2">
+<div class="formula">
+  <b>Discrete-time стек (точная репликация кода)</b><br><br>
+  • Sample time T_s = 1/150 с (логический поток)<br>
+  • Camera ZOH: <code>Zero-Order Hold</code> с T_cam = 1/60 c<br>
+  • EMA: <code>Discrete Filter</code> num=[α], den=[1, α−1]<br>
+  • τ delays: <code>Transport Delay</code> или <code>Delay</code> блок<br>
+  • Saturation: <code>Saturation</code><br>
+  • Ramp: <code>Rate Limiter</code> (R↑ = R↓ = α)<br>
+  • Pulse-period: <code>1-D Lookup Table</code> по vel_table
+</div>
+
+<div class="formula">
+  <b>Continuous-time упрощённая (для синтеза)</b><br><br>
+  • Все блоки → <code>Transfer Fcn</code><br>
+  • EMA: 1/(T_ф·s+1), T_ф=0.027<br>
+  • Камера: 1 (или 1/(T_cam·s+1) если хочешь)<br>
+  • Запаздывания: <code>Pade approximation</code> 2-го порядка<br>
+  • Шаговик: K_step / s (интегратор сразу до θ_cam)<br>
+  • Регулятор: <code>Gain</code> × <code>Saturation</code><br>
+  • Можно использовать <code>linmod</code> + <code>margin</code> для
+  получения границы устойчивости.
+</div>
+</div>
+
+<div class="ok">
+  <b>Гипотеза, которую интересно проверить в модели:</b> при текущих
+  параметрах (T_ф ≈ 27–67 мс, τ ≈ 8 мс, K_шд от микрошага) расчётная
+  граница устойчивости по K_p должна выйти примерно на 0.4–0.6 — то что
+  ты и видишь экспериментально. Если так — модель адекватна, и можно
+  уверенно начинать пробовать D-член или прогноз на ней.
+</div>
+
+<footer>
+  Статический документ — без JS, без внешних ассетов. Редактируй
+  <code>docs/structural-diagram.html</code> при изменениях прошивки или
+  параметров. Связанные файлы:
+  <a href="control-system.html">control-system.html</a>,
+  <a href="drive-simulator.html">drive-simulator.html</a>.
+</footer>
+
+</body>
+</html>

@@ -384,6 +384,21 @@ the same `vel_table[]`, `accel_skip` formula and Timer2 walk as
 `cameraControl.ino` — so what you see is what the MCU would actually do.
 No build step, no server: just open the file.
 
+### 📐 Structural block diagram (control-theory view)
+
+For MATLAB/Simulink modelling there's a separate
+[`docs/structural-diagram.html`](docs/structural-diagram.html) — a
+GOST-style block diagram that splits the loop into Python host blocks
+(optics+detector+EMA+TX), Arduino blocks (parser+P-regulator+ramp+pulse
+generator) and the physical kinematics, with **explicit transfer functions
+(s- and z-domain) for every stage** ready to paste into a Simulink model.
+
+The diagram makes it visually obvious that the inner motor loop is
+currently **open** (no encoder, no tachometer, no current loop) — only the
+outer visual loop is closed via the camera. A side-by-side comparison
+table shows what would need to be added to reach a classical
+three-regulator servo-drive structure (current → speed → position).
+
 ---
 
 ## 🧪 Troubleshooting
