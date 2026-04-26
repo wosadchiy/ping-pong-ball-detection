@@ -264,6 +264,79 @@ def create_ui(store, available_cams):
             dpg.add_button(label="TOGGLE MASK VIEW (M)", width=-1, callback=toggle_mask_window)
             dpg.add_button(label="SAVE ALL SETTINGS", width=-1, callback=store.save_to_json)
 
+        # СЕКЦИЯ 6: Тюнинг привода без камеры.
+        #
+        # Сценарий: камера физически снята с вала, нужно прогнать мотор на
+        # разных скоростях/ускорениях и посмотреть где он срывается. Все
+        # три контрола улетают на Ардуино как A/M/O команды (см. hardware
+        # `_push_drive_tuning`), причём ТОЛЬКО при изменении значения, так
+        # что серийная линия не забивается мусором между движениями
+        # ползунка. Manual Override имеет приоритет над камерным
+        # P-управлением, но физические кнопки на самой плате всё равно
+        # перебивают всё.
+        with dpg.collapsing_header(label="DRIVE TUNING", default_open=False):
+            dpg.add_text(
+                "Disconnect the camera from the motor shaft before using\n"
+                "manual override. Acceleration is shared with camera mode\n"
+                "(applies to every ramp, not just manual sweeps).",
+                color=[160, 160, 160],
+            )
+
+            # Acceleration — sent to firmware as A<value>. Effective α is
+            # capped by the current max_omega (≈ max_omega × 5 user/sec²)
+            # because the firmware ramps via a 1 kHz timer with a one-idx
+            # step of size max_omega/V_TABLE_N. Tooltip says so.
+            _add_linked_value_control(
+                label="Acceleration (units/sec^2)",
+                tag_prefix="accel",
+                min_value=10, max_value=500,
+                default_value=int(round(store.accel)),
+                on_change=lambda v: setattr(store, 'accel', float(v)),
+                is_float=False,
+                step=10, step_fast=50,
+            )
+            with dpg.tooltip("slider_accel"):
+                dpg.add_text(
+                    "Ramp rate the firmware is allowed to use when\n"
+                    "transitioning from current omega to the target.\n"
+                    "Effective max ~= 5 * Max Speed user-units/sec^2,\n"
+                    "so increase Max Speed to unlock faster ramps."
+                )
+
+            def _on_manual_active_toggle(_s, v):
+                store.manual_omega_active = bool(v)
+
+            dpg.add_checkbox(
+                label="MANUAL OMEGA OVERRIDE",
+                tag="ui_manual_active",
+                default_value=False,
+                callback=_on_manual_active_toggle,
+            )
+            with dpg.tooltip("ui_manual_active"):
+                dpg.add_text(
+                    "ON: ignore camera, drive the motor straight from the\n"
+                    "Manual omega slider below (good for characterising\n"
+                    "the drive itself with the shaft disconnected).\n"
+                    "OFF: normal P-control on pixel error from the camera."
+                )
+
+            _add_linked_value_control(
+                label="Manual omega (units, signed)",
+                tag_prefix="manual_omega",
+                min_value=-100, max_value=100,
+                default_value=int(round(store.manual_omega)),
+                on_change=lambda v: setattr(store, 'manual_omega', float(v)),
+                is_float=False,
+                step=1, step_fast=10,
+            )
+            with dpg.tooltip("slider_manual_omega"):
+                dpg.add_text(
+                    "Direct omega target in user units. Sign = direction.\n"
+                    "Only takes effect when 'MANUAL OMEGA OVERRIDE' is ON.\n"
+                    "Final value is clamped on the Arduino side to\n"
+                    "[-Max Speed, +Max Speed]."
+                )
+
     # Окна для видеопотоков
     with dpg.window(label="Camera Feed", pos=[310, 0], no_close=True):
         dpg.add_image("camera_texture")

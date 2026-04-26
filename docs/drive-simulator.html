@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BallTrackerPro — Drive Simulator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+         sans-serif; margin: 28px auto; max-width: 1180px; padding: 0 20px;
+         background: #131418; color: #e8e8e8; line-height: 1.55; }
+
+  h1 { font-size: 26px; margin: 0 0 4px; font-weight: 600; letter-spacing: -.2px; }
+  h2 { font-size: 18px; margin: 32px 0 12px; padding-bottom: 6px;
+       border-bottom: 1px solid #2a2c33; font-weight: 600; }
+  h3 { font-size: 14px; margin: 0 0 10px; color: #cdd0d6; font-weight: 600;
+       text-transform: uppercase; letter-spacing: .04em; }
+
+  p, li { font-size: 14px; color: #c0c4ce; }
+  small { color: #7a7f8b; font-size: 12px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace;
+         background: #1c1e25; padding: 1px 6px; border-radius: 3px;
+         color: #e0c177; font-size: 13px; }
+  a { color: #7ab1f5; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .lede { color: #a8acb6; font-size: 14px; max-width: 820px; margin: 0 0 14px; }
+  .back { display: inline-block; margin-bottom: 18px; font-size: 13px;
+          color: #7ab1f5; }
+
+  /* ---- inputs panel ---- */
+  .panel { background: #181a20; border: 1px solid #2a2c33; border-radius: 8px;
+           padding: 18px 22px; margin-bottom: 18px; }
+
+  /* sticky variant — inputs panel pinned to top so user doesn't have to
+     scroll back up after adjusting a slider */
+  .panel.sticky { position: sticky; top: 8px; z-index: 50;
+                  background: rgba(24, 26, 32, 0.96);
+                  backdrop-filter: blur(14px) saturate(140%);
+                  -webkit-backdrop-filter: blur(14px) saturate(140%);
+                  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+                  padding: 14px 20px; }
+  .panel.sticky .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .panel.sticky .panel-head h2 {
+    margin: 0; padding: 0; border: none; font-size: 13px;
+    text-transform: uppercase; letter-spacing: .08em; color: #8d92a0;
+  }
+  .panel.sticky .panel-head .hint-tiny {
+    font-size: 11px; color: #6c7080; font-family: ui-monospace, monospace;
+  }
+
+  /* minmax(0, 1fr) keeps the 5 columns truly equal even when one cell's
+     unit text contains a long unbreakable run like "milliseconds · …".
+     Without it the column would auto-grow and the rightmost cell could
+     spill past the panel border. */
+  .controls { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+              gap: 16px; }
+  @media (max-width: 1000px) { .controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 600px)  { .controls { grid-template-columns: minmax(0, 1fr); } }
+
+  .ctrl { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .ctrl label { font-size: 12px; color: #8d92a0; text-transform: uppercase;
+                letter-spacing: .05em; font-weight: 600; }
+  .ctrl .row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .ctrl input[type=range] {
+    flex: 1; min-width: 0; accent-color: #4d9fff;
+    background: transparent; height: 22px;
+  }
+  .ctrl input[type=number] {
+    width: 78px; flex-shrink: 0;
+    background: #0e0f13; color: #e8e8e8;
+    border: 1px solid #2a2c33; border-radius: 4px;
+    padding: 5px 8px; font-family: ui-monospace, monospace;
+    font-size: 13px; text-align: right;
+  }
+  .ctrl input[type=number]:focus { outline: none; border-color: #4d9fff; }
+  .ctrl .unit { font-size: 11px; color: #6c7080; line-height: 1.4;
+                overflow-wrap: anywhere; }
+  .ctrl .hint { font-size: 11px; color: #6c7080; font-style: italic; }
+
+  .preset-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .preset-row button {
+    background: #1c1e25; color: #c0c4ce; border: 1px solid #2a2c33;
+    border-radius: 4px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+    font-family: inherit;
+  }
+  .preset-row button:hover { background: #232631; color: #e8e8e8; }
+
+  /* ---- computed badges ---- */
+  .badges { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  @media (max-width: 1000px) { .badges { grid-template-columns: repeat(2, 1fr); } }
+
+  .badge { background: #0e0f13; border: 1px solid #2a2c33; border-radius: 6px;
+           padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; }
+  .badge .lab { font-size: 11px; color: #7a7f8b; text-transform: uppercase;
+                letter-spacing: .05em; }
+  .badge .val { font-size: 18px; color: #e8e8e8; font-family: ui-monospace, monospace;
+                font-weight: 600; }
+  .badge .sub { font-size: 11px; color: #6c7080; }
+  .badge.warn { border-color: #574020; background: #2a1f0c; }
+  .badge.warn .val { color: #ffb84d; }
+  .badge.ok   { border-color: #1f5a3e; background: #0d251a; }
+  .badge.ok   .val { color: #4dd29a; }
+
+  /* ---- plot ---- */
+  .plot-wrap { background: #0c0d11; border: 1px solid #2a2c33; border-radius: 8px;
+               padding: 14px; margin-bottom: 16px; }
+  .plot-wrap h3 { display: flex; align-items: center; gap: 10px; }
+  .plot-wrap canvas { display: block; width: 100%; height: 270px;
+                      background: #0c0d11; }
+  .plot-wrap .legend { display: flex; gap: 18px; flex-wrap: wrap;
+                       font-size: 11px; color: #8d92a0; margin-top: 8px;
+                       font-family: ui-monospace, monospace; }
+  .plot-wrap .legend .sw {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    vertical-align: middle; margin-right: 4px;
+  }
+  .plot-wrap .desc { font-size: 12px; color: #7a7f8b; margin: 4px 0 10px; }
+
+  .zoom { display: flex; gap: 6px; margin-left: auto; }
+  .zoom button {
+    background: #1c1e25; color: #c0c4ce; border: 1px solid #2a2c33;
+    border-radius: 4px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+    font-family: ui-monospace, monospace;
+  }
+  .zoom button.active { background: #14233a; color: #4d9fff;
+                        border-color: #2a5288; }
+
+  /* ---- formulas + notes ---- */
+  .formula { background: #0e0f13; border: 1px solid #2a2c33;
+             border-left: 3px solid #4d9fff; padding: 12px 16px;
+             border-radius: 6px; margin: 10px 0; font-size: 13px;
+             color: #d8dde8; font-family: ui-monospace, monospace;
+             line-height: 1.7; }
+  .formula b { color: #ffcc00; font-weight: 600; }
+  .formula .v { color: #e0c177; }
+
+  .note { background: #14161c; border: 1px solid #2a2c33; border-radius: 6px;
+          padding: 12px 16px; font-size: 13px; color: #c0c4ce; margin: 10px 0; }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #23262d; }
+  th { color: #8d92a0; font-weight: 600; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .04em; }
+  td code { background: #14161c; }
+
+  footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #2a2c33;
+           color: #6c7080; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<a class="back" href="control-system.html">← Back to Control System</a>
+
+<h1>Drive Simulator</h1>
+<p class="lede">
+  Pure-JS replica of the firmware velocity-ramp algorithm in
+  <code>cameraControl.ino</code>. Drag the sliders &mdash; everything you see is
+  what the Arduino would actually do, computed with the same
+  <code>vel_table[]</code>, the same <code>accel_skip</code>, and the same Timer2 ISR
+  walk. No flashing required.
+</p>
+
+<!-- ============================================================ -->
+<!-- 1. INPUTS (sticky)                                           -->
+<!-- ============================================================ -->
+
+<div class="panel sticky">
+  <div class="panel-head">
+    <h2>Inputs</h2>
+    <span class="hint-tiny">drag any slider — graphs rebuild instantly</span>
+  </div>
+  <div class="controls">
+    <div class="ctrl">
+      <label>Max Speed (max_omega)</label>
+      <div class="row">
+        <input id="maxSpeed_s"  type="range"  min="10"   max="200" step="1"   value="100">
+        <input id="maxSpeed_n"  type="number" min="10"   max="200" step="1"   value="100">
+      </div>
+      <span class="unit">user-units &middot; ceiling for |ω|</span>
+    </div>
+
+    <div class="ctrl">
+      <label>Acceleration (α)</label>
+      <div class="row">
+        <input id="accel_s"     type="range"  min="10"   max="2000" step="10"  value="500">
+        <input id="accel_n"     type="number" min="10"   max="2000" step="10"  value="500">
+      </div>
+      <span class="unit">user-units / sec²</span>
+    </div>
+
+    <div class="ctrl">
+      <label>Initial omega</label>
+      <div class="row">
+        <input id="initOmega_s" type="range"  min="-200" max="200" step="1"   value="0">
+        <input id="initOmega_n" type="number" min="-200" max="200" step="1"   value="0">
+      </div>
+      <span class="unit">user-units (signed) &middot; starting cur_v_idx</span>
+    </div>
+
+    <div class="ctrl">
+      <label>Manual omega (target)</label>
+      <div class="row">
+        <input id="tgtOmega_s"  type="range"  min="-200" max="200" step="1"   value="100">
+        <input id="tgtOmega_n"  type="number" min="-200" max="200" step="1"   value="100">
+      </div>
+      <span class="unit">user-units (signed) &middot; target_v_idx</span>
+    </div>
+
+    <div class="ctrl">
+      <label>Duration</label>
+      <div class="row">
+        <input id="duration_s"  type="range"  min="50"   max="500" step="5"  value="400">
+        <input id="duration_n"  type="number" min="50"   max="500" step="5"  value="400">
+      </div>
+      <span class="unit">milliseconds &middot; total simulation window</span>
+    </div>
+  </div>
+
+  <div class="preset-row">
+    <small style="color:#7a7f8b; align-self:center; margin-right: 4px;">presets:</small>
+    <button data-preset="rest-to-max">rest → max</button>
+    <button data-preset="reverse">reversal (+max → −max)</button>
+    <button data-preset="through-zero">through-zero (mute window)</button>
+    <button data-preset="alpha-clamp">α clamped (request 2000)</button>
+    <button data-preset="small-step">small-step (10 → 15)</button>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 2. COMPUTED                                                  -->
+<!-- ============================================================ -->
+
+<h2>Firmware-side computed</h2>
+<div class="panel">
+  <div class="badges" id="badges"></div>
+
+  <div class="formula" style="margin-top: 14px;">
+    <b>accel_skip</b> = round(1000 &middot; (max_omega / 200) / α), clamped to [1, 250]<br>
+    <b>α<sub>eff</sub></b>      = (max_omega / 200) &middot; 1000 / accel_skip<br>
+    <b>α<sub>max</sub></b>      = max_omega &middot; 1000 / 200 &nbsp; (when accel_skip = 1)<br>
+    <b>vel_table[i]</b> = round(11172 / (max_omega &middot; i / 200))
+    &nbsp;&middot;&nbsp; pulse period in µs<br>
+    <b>target_idx</b>   = clamp(round(target_omega &middot; 200 / max_omega), &plusmn;200)
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 3. PLOTS                                                     -->
+<!-- ============================================================ -->
+
+<h2>Plots</h2>
+
+<div class="plot-wrap">
+  <h3>
+    <span style="color:#4d9fff;">●</span> ω(t) &mdash; velocity ramp
+  </h3>
+  <p class="desc">
+    Stepwise advance of <code>cur_v_idx</code> toward <code>target_v_idx</code>,
+    one ±1 step every <code>accel_skip</code> ms. Dashed line = target.
+  </p>
+  <canvas id="plot1"></canvas>
+  <div class="legend">
+    <span><span class="sw" style="background:#4d9fff;"></span>cur_v_idx → ω(user-units)</span>
+    <span><span class="sw" style="background:#ff8c4d;"></span>target ω</span>
+    <span><span class="sw" style="background:#5d626d;"></span>zero line</span>
+  </div>
+</div>
+
+<div class="plot-wrap">
+  <h3>
+    <span style="color:#ff8c4d;">●</span> Step pulses
+    <div class="zoom" id="zoom2">
+      <button data-zoom="0.02"  >20 ms</button>
+      <button data-zoom="0.1"   >100 ms</button>
+      <button data-zoom="full" class="active">full</button>
+      <button data-zoom="tail"  >last 50 ms</button>
+    </div>
+  </h3>
+  <p class="desc">
+    Vertical tick = one rising edge on <code>stepPin</code>.
+    Periods <code>T₁, T₂, …</code> shrink as <code>OCR1A</code> drops along the
+    ramp. At idx=0 the motor is muted (no ticks).
+  </p>
+  <canvas id="plot2"></canvas>
+  <div class="legend">
+    <span><span class="sw" style="background:#ff8c4d;"></span>step pulse</span>
+    <span><span class="sw" style="background:#3a4250;"></span>|ω| envelope</span>
+    <span><span class="sw" style="background:#572d1c;"></span>muted (idx=0)</span>
+  </div>
+</div>
+
+<div class="plot-wrap">
+  <h3>
+    <span style="color:#e0c177;">●</span> T(n) &mdash; period of the n<sup>th</sup> pulse
+  </h3>
+  <p class="desc">
+    Period of pulse #n in µs. Steep drop = motor is accelerating (each
+    successive pulse is closer than the previous, exactly like the sketch
+    that motivated all this).
+  </p>
+  <canvas id="plot3"></canvas>
+  <div class="legend">
+    <span><span class="sw" style="background:#e0c177;"></span>T<sub>n</sub> = t<sub>n</sub> − t<sub>n−1</sub> (µs)</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 4. NOTES                                                     -->
+<!-- ============================================================ -->
+
+<h2>Notes &amp; caveats</h2>
+
+<div class="note">
+  <b style="color:#e8e8e8;">Quantisation matches firmware.</b>
+  Velocity is discretised into <code>V_TABLE_N = 200</code> levels in
+  <code>[0, max_omega]</code>. The Timer2 ISR ticks at 1 kHz and advances
+  <code>cur_v_idx</code> by ±1 every <code>accel_skip</code> ticks.
+  Step pulse generation is hardware (Timer1 CTC + COM1A0 toggle); the
+  simulator just walks <code>last_pulse_us += OCR1A</code> within each 1 ms
+  ISR window, which is faithful to within ±1 pulse at OCR1A boundaries.
+</div>
+
+<div class="note">
+  <b style="color:#e8e8e8;">Rebuild on max_omega.</b>
+  When <code>max_omega</code> changes, the firmware rebuilds <code>vel_table[]</code>
+  and recomputes <code>accel_skip</code> so that the physical α stays
+  constant. The simulator does the same on every input change &mdash; no
+  sticky state.
+</div>
+
+<div class="note">
+  <b style="color:#e8e8e8;">α ceiling.</b>
+  At <code>accel_skip = 1</code> the ramp is at hardware max:
+  <code>α<sub>max</sub> = max_omega &middot; 5</code> user/sec² (since 200 levels in 1 sec).
+  Asking for more silently clamps. To unlock faster ramps, raise Max Speed.
+</div>
+
+<table>
+  <thead>
+    <tr><th>max_omega</th><th>α<sub>max</sub></th><th>full ramp time</th><th>OCR1A at top</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>40</code></td><td><code>200</code></td><td><code>200 ms</code></td><td><code>≈279 µs</code></td></tr>
+    <tr><td><code>60</code></td><td><code>300</code></td><td><code>200 ms</code></td><td><code>≈186 µs</code></td></tr>
+    <tr><td><code>80</code></td><td><code>400</code></td><td><code>200 ms</code></td><td><code>≈140 µs</code></td></tr>
+    <tr><td><code>100</code></td><td><code>500</code></td><td><code>200 ms</code></td><td><code>≈112 µs</code></td></tr>
+    <tr><td><code>200</code></td><td><code>1000</code></td><td><code>200 ms</code></td><td><code>≈56 µs</code></td></tr>
+  </tbody>
+</table>
+
+<footer>
+  Source of truth:
+  <code>camera_control/cameraControl/cameraControl.ino</code>.
+  This document is purely client-side &mdash; open it in any browser, no
+  build step or server.
+</footer>
+
+<!-- ============================================================ -->
+<!-- 5. SCRIPT                                                    -->
+<!-- ============================================================ -->
+
+<script>
+"use strict";
+
+// ────────────────────────────────────────────────────────────────
+// FIRMWARE CONSTANTS (must match cameraControl.ino)
+// ────────────────────────────────────────────────────────────────
+const V_TABLE_N = 200;
+const TIMER2_HZ = 1000;
+const OCR_FLOOR = 20;
+const OCR_CEIL  = 65535;
+const OCR_NUM   = 11172;          // OCR1A = OCR_NUM / ω_user
+
+// ────────────────────────────────────────────────────────────────
+// SIMULATION
+// ────────────────────────────────────────────────────────────────
+function buildVelTable(max_omega) {
+  const t = new Float64Array(V_TABLE_N + 1);
+  t[0] = OCR_CEIL;
+  for (let i = 1; i <= V_TABLE_N; i++) {
+    const v = max_omega * i / V_TABLE_N;
+    let ocr = OCR_NUM / v;
+    if (ocr > OCR_CEIL) ocr = OCR_CEIL;
+    if (ocr < OCR_FLOOR) ocr = OCR_FLOOR;
+    t[i] = ocr;
+  }
+  return t;
+}
+
+function omegaToIdx(omega, max_omega) {
+  if (max_omega < 0.1) return 0;
+  return Math.round(omega * V_TABLE_N / max_omega);
+}
+
+function clampIdx(i) {
+  if (i >  V_TABLE_N) return  V_TABLE_N;
+  if (i < -V_TABLE_N) return -V_TABLE_N;
+  return i;
+}
+
+function simulate(p) {
+  const { max_omega, alpha, target_omega, initial_omega, duration_ms } = p;
+
+  // Mirror recompute_accel_skip()
+  const ms_per_idx = 1000 * (max_omega / V_TABLE_N) / Math.max(1, alpha);
+  let accel_skip = Math.round(ms_per_idx);
+  let skip_clamp = "ok";
+  if (accel_skip < 1)   { accel_skip = 1;   skip_clamp = "alpha-cap"; }
+  if (accel_skip > 250) { accel_skip = 250; skip_clamp = "alpha-floor"; }
+
+  const alpha_eff = (max_omega / V_TABLE_N) * 1000 / accel_skip;
+  const alpha_max = max_omega * 1000 / V_TABLE_N;
+
+  const tgt_raw  = omegaToIdx(target_omega,  max_omega);
+  const init_raw = omegaToIdx(initial_omega, max_omega);
+  const target_idx  = clampIdx(tgt_raw);
+  const initial_idx = clampIdx(init_raw);
+
+  const vel_table = buildVelTable(max_omega);
+
+  // Run the Timer2 ISR loop
+  const total_ms = Math.max(1, Math.round(duration_ms));
+  const pulses      = [];                   // [{ t_ms, idx, ocr_us }]
+  const omega_track = new Float64Array(total_ms);
+  const idx_track   = new Int16Array(total_ms);
+
+  let cur_idx = initial_idx;
+  let last_pulse_us = 0;
+  let in_mute = (cur_idx === 0);
+  let skip = 0;
+  let reach_time_ms = (cur_idx === target_idx) ? 0 : -1;
+
+  for (let t_ms = 0; t_ms < total_ms; t_ms++) {
+    if (++skip >= accel_skip) {
+      skip = 0;
+      if      (cur_idx < target_idx) cur_idx++;
+      else if (cur_idx > target_idx) cur_idx--;
+    }
+
+    if (reach_time_ms < 0 && cur_idx === target_idx) reach_time_ms = t_ms;
+
+    omega_track[t_ms] = max_omega * cur_idx / V_TABLE_N;
+    idx_track[t_ms]   = cur_idx;
+
+    if (cur_idx === 0) {
+      // Motor muted; skip pulse generation, push timing forward so
+      // resume starts cleanly at the next non-zero ms.
+      last_pulse_us = (t_ms + 1) * 1000;
+      in_mute = true;
+      continue;
+    }
+
+    if (in_mute) {
+      // Resuming from mute — pulse train begins fresh from "now".
+      last_pulse_us = t_ms * 1000;
+      in_mute = false;
+    }
+
+    const mag = Math.abs(cur_idx);
+    const ocr_us = vel_table[mag];
+    const t_end_us = (t_ms + 1) * 1000;
+
+    while (last_pulse_us + ocr_us <= t_end_us) {
+      last_pulse_us += ocr_us;
+      pulses.push({ t_ms: last_pulse_us / 1000, idx: cur_idx, ocr_us });
+    }
+  }
+
+  // Pulse-period series for plot 3
+  const T_track = new Float64Array(Math.max(0, pulses.length - 1));
+  for (let i = 1; i < pulses.length; i++) {
+    T_track[i - 1] = (pulses[i].t_ms - pulses[i - 1].t_ms) * 1000;  // µs
+  }
+
+  const ocr_at_target = (target_idx === 0)
+    ? null : vel_table[Math.abs(target_idx)];
+  const pps_at_target = (ocr_at_target == null) ? 0 : 1e6 / ocr_at_target;
+  const pulses_in_ramp = (reach_time_ms >= 0)
+    ? pulses.filter(p => p.t_ms <= reach_time_ms).length
+    : pulses.length;
+
+  return {
+    pulses, omega_track, idx_track, T_track,
+    accel_skip, skip_clamp, alpha_eff, alpha_max,
+    target_idx, initial_idx, target_clamped: tgt_raw !== target_idx,
+    initial_clamped: init_raw !== initial_idx,
+    reach_time_ms, pulses_in_ramp,
+    ocr_at_target, pps_at_target,
+    total_ms,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// PLOTTING (vanilla canvas)
+// ────────────────────────────────────────────────────────────────
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = Math.max(1, Math.round(rect.width  * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: rect.width, h: rect.height };
+}
+
+function drawAxes(ctx, box, x0, x1, y0, y1, opts) {
+  const { padL, padR, padT, padB, w, h } = box;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const sx = x => padL + (x - x0) / (x1 - x0) * plotW;
+  const sy = y => padT + (1 - (y - y0) / (y1 - y0)) * plotH;
+
+  // Background
+  ctx.fillStyle = "#0c0d11";
+  ctx.fillRect(0, 0, w, h);
+
+  // Gridlines
+  ctx.strokeStyle = "#1f2128";
+  ctx.lineWidth = 1;
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillStyle = "#7a7f8b";
+  ctx.textBaseline = "middle";
+
+  const xTicks = opts.xTicks ?? 6;
+  for (let i = 0; i <= xTicks; i++) {
+    const xv = x0 + (x1 - x0) * i / xTicks;
+    const xp = sx(xv);
+    ctx.beginPath();
+    ctx.moveTo(xp, padT);
+    ctx.lineTo(xp, padT + plotH);
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.fillText(opts.fmtX ? opts.fmtX(xv) : xv.toFixed(0),
+                 xp, padT + plotH + 14);
+  }
+  const yTicks = opts.yTicks ?? 5;
+  for (let i = 0; i <= yTicks; i++) {
+    const yv = y0 + (y1 - y0) * i / yTicks;
+    const yp = sy(yv);
+    ctx.beginPath();
+    ctx.moveTo(padL, yp);
+    ctx.lineTo(padL + plotW, yp);
+    ctx.stroke();
+    ctx.textAlign = "right";
+    ctx.fillText(opts.fmtY ? opts.fmtY(yv) : yv.toFixed(0),
+                 padL - 6, yp);
+  }
+
+  // Frame
+  ctx.strokeStyle = "#2a2c33";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(padL, padT, plotW, plotH);
+
+  // Axis labels
+  ctx.fillStyle = "#8d92a0";
+  ctx.font = "11px ui-monospace, monospace";
+  if (opts.xLabel) {
+    ctx.textAlign = "right";
+    ctx.fillText(opts.xLabel, padL + plotW, padT + plotH + 28);
+  }
+  if (opts.yLabel) {
+    ctx.textAlign = "left";
+    ctx.fillText(opts.yLabel, padL, padT - 4);
+  }
+
+  return { sx, sy, plotW, plotH };
+}
+
+function plotOmega(canvas, sim, params) {
+  const { ctx, w, h } = setupCanvas(canvas);
+  const box = { padL: 60, padR: 14, padT: 18, padB: 38, w, h };
+
+  const N = sim.omega_track.length;
+  const t1 = sim.total_ms;
+  const yAbsMax = Math.max(
+    Math.abs(params.max_omega),
+    Math.abs(params.target_omega),
+    Math.abs(params.initial_omega),
+    1
+  );
+  // Symmetric ω range so direction-reversal looks centred on zero.
+  const yMax = Math.ceil(yAbsMax / 10) * 10;
+  const yMin = -yMax;
+
+  const ax = drawAxes(ctx, box, 0, t1, yMin, yMax, {
+    xLabel: "t (ms)", yLabel: "ω (user-units)",
+    xTicks: 8, yTicks: 6,
+    fmtX: v => v.toFixed(0),
+    fmtY: v => v.toFixed(0),
+  });
+
+  // Zero line
+  ctx.strokeStyle = "#5d626d";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 3]);
+  ctx.beginPath();
+  ctx.moveTo(ax.sx(0),  ax.sy(0));
+  ctx.lineTo(ax.sx(t1), ax.sy(0));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Target line
+  ctx.strokeStyle = "#ff8c4d";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  const yt = params.max_omega * sim.target_idx / V_TABLE_N;
+  ctx.moveTo(ax.sx(0),  ax.sy(yt));
+  ctx.lineTo(ax.sx(t1), ax.sy(yt));
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#ff8c4d";
+  ctx.textAlign = "left";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillText(`target = ${yt.toFixed(1)}`, ax.sx(t1) - 80, ax.sy(yt) - 6);
+
+  // ω(t) trace
+  ctx.strokeStyle = "#4d9fff";
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    const x = ax.sx(i);
+    const y = ax.sy(sim.omega_track[i]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Mark "reach target" event
+  if (sim.reach_time_ms >= 0) {
+    const xr = ax.sx(sim.reach_time_ms);
+    ctx.strokeStyle = "#4dd29a";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xr, box.padT);
+    ctx.lineTo(xr, box.padT + ax.plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#4dd29a";
+    ctx.textAlign = "left";
+    ctx.fillText(`reached @ ${sim.reach_time_ms} ms`,
+                 xr + 4, box.padT + 14);
+  }
+}
+
+function plotPulses(canvas, sim, params, zoom) {
+  const { ctx, w, h } = setupCanvas(canvas);
+  const box = { padL: 60, padR: 14, padT: 18, padB: 38, w, h };
+
+  // Determine zoom window
+  let t0 = 0, t1 = sim.total_ms;
+  if (zoom === "0.02") { t1 = Math.min(20,  sim.total_ms); }
+  else if (zoom === "0.1") { t1 = Math.min(100, sim.total_ms); }
+  else if (zoom === "tail") {
+    const span = Math.min(50, sim.total_ms);
+    t0 = sim.total_ms - span;
+    t1 = sim.total_ms;
+  }
+
+  const ax = drawAxes(ctx, box, t0, t1, 0, 1.05, {
+    xLabel: "t (ms)", yLabel: "stepPin",
+    xTicks: 8, yTicks: 0,
+    fmtX: v => v.toFixed(t1 - t0 < 50 ? 1 : 0),
+  });
+
+  // Envelope = |ω| / max_omega
+  ctx.strokeStyle = "#3a4250";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  let started = false;
+  for (let i = Math.max(0, Math.floor(t0)); i < Math.min(sim.total_ms, Math.ceil(t1)); i++) {
+    const env = Math.abs(sim.omega_track[i]) / Math.max(1, params.max_omega);
+    const x = ax.sx(i);
+    const y = ax.sy(env);
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Mute zones (idx == 0)
+  ctx.fillStyle = "rgba(87, 45, 28, 0.4)";
+  let muteStart = -1;
+  for (let i = Math.max(0, Math.floor(t0)); i <= Math.min(sim.total_ms, Math.ceil(t1)); i++) {
+    const muted = (i < sim.total_ms && sim.idx_track[i] === 0);
+    if (muted && muteStart < 0) muteStart = i;
+    if ((!muted || i === sim.total_ms) && muteStart >= 0) {
+      const xS = ax.sx(muteStart);
+      const xE = ax.sx(i);
+      ctx.fillRect(xS, box.padT, xE - xS, ax.plotH);
+      muteStart = -1;
+    }
+  }
+
+  // Pulse ticks
+  ctx.strokeStyle = "#ff8c4d";
+  ctx.lineWidth = 1;
+  const yTop = box.padT;
+  const yBot = box.padT + ax.plotH;
+  let drawn = 0;
+  ctx.beginPath();
+  for (const p of sim.pulses) {
+    if (p.t_ms < t0 || p.t_ms > t1) continue;
+    const x = ax.sx(p.t_ms);
+    ctx.moveTo(x, yBot);
+    ctx.lineTo(x, yBot - ax.plotH * 0.6);
+    drawn++;
+  }
+  ctx.stroke();
+
+  // Annotate first few periods T1, T2, T3 if zoomed in
+  if (t1 - t0 <= 50 && sim.pulses.length >= 4) {
+    ctx.fillStyle = "#e0c177";
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    const limit = Math.min(8, sim.pulses.length - 1);
+    for (let i = 1; i <= limit; i++) {
+      const a = sim.pulses[i - 1].t_ms;
+      const b = sim.pulses[i].t_ms;
+      if (b > t1 || a < t0) continue;
+      const xMid = ax.sx((a + b) / 2);
+      ctx.fillText("T" + i, xMid, box.padT + 12);
+    }
+  }
+
+  // Pulse count annotation
+  ctx.fillStyle = "#8d92a0";
+  ctx.textAlign = "right";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillText(`${drawn} pulses in window · ${sim.pulses.length} total`,
+               box.padL + ax.plotW - 4, box.padT + 12);
+}
+
+function plotPeriod(canvas, sim, params) {
+  const { ctx, w, h } = setupCanvas(canvas);
+  const box = { padL: 60, padR: 14, padT: 18, padB: 38, w, h };
+
+  const N = sim.T_track.length;
+  if (N === 0) {
+    drawAxes(ctx, box, 0, 1, 0, 1, {
+      xLabel: "n", yLabel: "T (µs)", xTicks: 4, yTicks: 4,
+    });
+    ctx.fillStyle = "#7a7f8b";
+    ctx.textAlign = "center";
+    ctx.font = "13px sans-serif";
+    ctx.fillText("not enough pulses to compute periods",
+                 box.padL + (w - box.padL - box.padR) / 2, h / 2);
+    return;
+  }
+
+  let yMax = 0;
+  for (let i = 0; i < N; i++) if (sim.T_track[i] > yMax) yMax = sim.T_track[i];
+  // Pad and clamp
+  yMax = Math.min(OCR_CEIL, Math.ceil(yMax * 1.1));
+  if (yMax < 100) yMax = 100;
+
+  const ax = drawAxes(ctx, box, 0, N, 0, yMax, {
+    xLabel: "pulse #", yLabel: "T (µs)", xTicks: 6, yTicks: 5,
+    fmtX: v => v.toFixed(0), fmtY: v => v.toFixed(0),
+  });
+
+  // Steady-state line at OCR_at_target, if any
+  if (sim.ocr_at_target != null) {
+    ctx.strokeStyle = "#ff8c4d";
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(ax.sx(0), ax.sy(sim.ocr_at_target));
+    ctx.lineTo(ax.sx(N), ax.sy(sim.ocr_at_target));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#ff8c4d";
+    ctx.textAlign = "left";
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText(`OCR1A target = ${sim.ocr_at_target.toFixed(0)} µs`,
+                 ax.sx(0) + 6, ax.sy(sim.ocr_at_target) - 6);
+  }
+
+  // Line trace
+  ctx.strokeStyle = "#e0c177";
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    const x = ax.sx(i + 1);
+    const y = ax.sy(sim.T_track[i]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Dots (only if not too dense)
+  if (N <= 800) {
+    ctx.fillStyle = "#ffd76b";
+    for (let i = 0; i < N; i++) {
+      const x = ax.sx(i + 1);
+      const y = ax.sy(sim.T_track[i]);
+      ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
+// BADGES
+// ────────────────────────────────────────────────────────────────
+function fmtMs(v) {
+  if (v == null || v < 0) return "—";
+  return v.toFixed(v < 10 ? 1 : 0) + " ms";
+}
+function fmt(v, suffix = "", decimals = 1) {
+  if (v == null) return "—";
+  return v.toFixed(decimals) + suffix;
+}
+
+function renderBadges(sim, params) {
+  const root = document.getElementById("badges");
+  const skipClass =
+    sim.skip_clamp === "ok" ? "ok"
+    : sim.skip_clamp === "alpha-cap" ? "warn" : "warn";
+  const skipSub =
+    sim.skip_clamp === "alpha-cap"   ? "α requested > α_max — clamped to skip=1"
+    : sim.skip_clamp === "alpha-floor" ? "α below firmware floor — clamped to skip=250"
+    : `requested α matched`;
+
+  const tgtClass = sim.target_clamped ? "warn" : "";
+  const initClass = sim.initial_clamped ? "warn" : "";
+
+  root.innerHTML = `
+    <div class="badge ${skipClass}">
+      <span class="lab">accel_skip</span>
+      <span class="val">${sim.accel_skip} ms / idx</span>
+      <span class="sub">${skipSub}</span>
+    </div>
+    <div class="badge">
+      <span class="lab">α effective</span>
+      <span class="val">${fmt(sim.alpha_eff, " u/s²", 1)}</span>
+      <span class="sub">α_max possible = ${fmt(sim.alpha_max, " u/s²", 0)}</span>
+    </div>
+    <div class="badge ${tgtClass}">
+      <span class="lab">target_v_idx</span>
+      <span class="val">${sim.target_idx}</span>
+      <span class="sub">${sim.target_clamped
+        ? "clamped to ±200 — raise Max Speed"
+        : "ω = " + (params.max_omega * sim.target_idx / V_TABLE_N).toFixed(1) + " u"}</span>
+    </div>
+    <div class="badge ${initClass}">
+      <span class="lab">initial_v_idx</span>
+      <span class="val">${sim.initial_idx}</span>
+      <span class="sub">${sim.initial_clamped
+        ? "clamped to ±200"
+        : "ω₀ = " + (params.max_omega * sim.initial_idx / V_TABLE_N).toFixed(1) + " u"}</span>
+    </div>
+    <div class="badge">
+      <span class="lab">ramp time</span>
+      <span class="val">${fmtMs(sim.reach_time_ms)}</span>
+      <span class="sub">${sim.reach_time_ms < 0
+        ? "did not reach target in window"
+        : "Δidx = " + Math.abs(sim.target_idx - sim.initial_idx)}</span>
+    </div>
+    <div class="badge">
+      <span class="lab">pulses during ramp</span>
+      <span class="val">${sim.pulses_in_ramp}</span>
+      <span class="sub">total in window: ${sim.pulses.length}</span>
+    </div>
+    <div class="badge">
+      <span class="lab">steady-state rate</span>
+      <span class="val">${fmt(sim.pps_at_target, " pps", 0)}</span>
+      <span class="sub">${sim.ocr_at_target != null
+        ? "OCR1A = " + sim.ocr_at_target.toFixed(0) + " µs"
+        : "motor muted at target"}</span>
+    </div>
+    <div class="badge">
+      <span class="lab">timer2 ticks</span>
+      <span class="val">${sim.total_ms}</span>
+      <span class="sub">${TIMER2_HZ} Hz · 1 tick = 1 ms</span>
+    </div>
+  `;
+}
+
+// ────────────────────────────────────────────────────────────────
+// WIRING
+// ────────────────────────────────────────────────────────────────
+const els = {
+  maxSpeed_s : document.getElementById("maxSpeed_s"),
+  maxSpeed_n : document.getElementById("maxSpeed_n"),
+  accel_s    : document.getElementById("accel_s"),
+  accel_n    : document.getElementById("accel_n"),
+  initOmega_s: document.getElementById("initOmega_s"),
+  initOmega_n: document.getElementById("initOmega_n"),
+  tgtOmega_s : document.getElementById("tgtOmega_s"),
+  tgtOmega_n : document.getElementById("tgtOmega_n"),
+  duration_s : document.getElementById("duration_s"),
+  duration_n : document.getElementById("duration_n"),
+  plot1: document.getElementById("plot1"),
+  plot2: document.getElementById("plot2"),
+  plot3: document.getElementById("plot3"),
+};
+
+let zoomMode = "full";
+let lastSim = null;
+let lastParams = null;
+
+function readParams() {
+  return {
+    max_omega    : Math.max(10, +els.maxSpeed_n.value || 100),
+    alpha        : Math.max(1,  +els.accel_n.value    || 500),
+    initial_omega: +els.initOmega_n.value || 0,
+    target_omega : +els.tgtOmega_n.value  || 0,
+    duration_ms  : Math.min(500, Math.max(50, +els.duration_n.value || 400)),
+  };
+}
+
+function syncPair(sliderEl, numberEl) {
+  sliderEl.addEventListener("input", () => {
+    numberEl.value = sliderEl.value;
+    schedule();
+  });
+  numberEl.addEventListener("input", () => {
+    sliderEl.value = numberEl.value;
+    schedule();
+  });
+}
+
+let scheduled = false;
+function schedule() {
+  if (scheduled) return;
+  scheduled = true;
+  requestAnimationFrame(() => {
+    scheduled = false;
+    rerun();
+  });
+}
+
+function rerun() {
+  const p = readParams();
+  const sim = simulate(p);
+  lastSim = sim;
+  lastParams = p;
+  renderBadges(sim, p);
+  plotOmega(els.plot1, sim, p);
+  plotPulses(els.plot2, sim, p, zoomMode);
+  plotPeriod(els.plot3, sim, p);
+}
+
+// Sync sliders ↔ number inputs
+syncPair(els.maxSpeed_s,  els.maxSpeed_n);
+syncPair(els.accel_s,     els.accel_n);
+syncPair(els.initOmega_s, els.initOmega_n);
+syncPair(els.tgtOmega_s,  els.tgtOmega_n);
+syncPair(els.duration_s,  els.duration_n);
+
+// Zoom buttons
+document.querySelectorAll("#zoom2 button").forEach(b => {
+  b.addEventListener("click", () => {
+    zoomMode = b.dataset.zoom;
+    document.querySelectorAll("#zoom2 button").forEach(x =>
+      x.classList.toggle("active", x === b));
+    if (lastSim) plotPulses(els.plot2, lastSim, lastParams, zoomMode);
+  });
+});
+
+// Presets — all tuned to fit inside the 500 ms duration cap
+// (worst real-world case is full reversal -200 → +200 ≈ 420 ms)
+const PRESETS = {
+  "rest-to-max":  { maxSpeed: 100, accel: 500,  initOmega:    0, tgtOmega:  100, duration: 300 },
+  "reverse":      { maxSpeed: 100, accel: 500,  initOmega:  200, tgtOmega: -200, duration: 500 },
+  "through-zero": { maxSpeed: 100, accel: 300,  initOmega:   60, tgtOmega:  -60, duration: 500 },
+  "alpha-clamp":  { maxSpeed:  40, accel: 2000, initOmega:    0, tgtOmega:   40, duration: 300 },
+  "small-step":   { maxSpeed: 100, accel: 200,  initOmega:   10, tgtOmega:   15, duration: 200 },
+};
+document.querySelectorAll(".preset-row button[data-preset]").forEach(b => {
+  b.addEventListener("click", () => {
+    const p = PRESETS[b.dataset.preset];
+    if (!p) return;
+    els.maxSpeed_n.value  = els.maxSpeed_s.value  = p.maxSpeed;
+    els.accel_n.value     = els.accel_s.value     = p.accel;
+    els.initOmega_n.value = els.initOmega_s.value = p.initOmega;
+    els.tgtOmega_n.value  = els.tgtOmega_s.value  = p.tgtOmega;
+    els.duration_n.value  = els.duration_s.value  = p.duration;
+    schedule();
+  });
+});
+
+// Re-render on resize (canvas needs new pixel dims)
+let resizeT = null;
+window.addEventListener("resize", () => {
+  if (resizeT) clearTimeout(resizeT);
+  resizeT = setTimeout(rerun, 80);
+});
+
+// First run
+rerun();
+</script>
+</body>
+</html>

@@ -303,6 +303,89 @@ internet unless one of these is true:
 
 ---
 
+## 🔧 Drive tuning mode (camera disconnected)
+
+The Dashboard's **DRIVE TUNING** section (collapsible, off by default) lets
+you characterise the stepper motor by itself — useful when the camera is
+physically detached from the shaft and you want to find the limits of
+acceleration / max speed without the closed-loop noise from the vision
+stack.
+
+Three controls live there:
+
+| Control | What it sends to Arduino | Effect |
+|---|---|---|
+| `Acceleration (units/sec²)` | `A<value>\n` once per change | Caps the rate at which `omega` is allowed to change. The firmware ramps via a 1 kHz Timer2 ISR — see comments in `cameraControl.ino`. |
+| `MANUAL OMEGA OVERRIDE` | `M0\n` / `M1\n` once per change | When ON, the firmware ignores camera P-control input and drives the motor straight from `Manual omega`. Physical jog buttons still take priority. |
+| `Manual omega (units, signed)` | `O<value>\n` once per change | Direct omega target in user units. Sign = direction. Clamped on the firmware side to `[-Max Speed, +Max Speed]`. |
+
+These messages are only emitted when the relevant value changes, so the
+serial line stays quiet between slider movements. The legacy 7-field CSV
+packet (`ax,ay,nx,ny,kp,tracking,max_omega`) is unchanged — old firmware
+remains compatible, it just won't react to the new commands.
+
+### Effective acceleration ceiling
+
+Inside the firmware the velocity is quantised into `V_TABLE_N = 200`
+levels in `[0, max_omega]`. The 1 kHz ISR can advance one level every N
+ticks (where `N = accel_skip ∈ [1, 250]`), so:
+
+```
+α_eff = (max_omega / 200) * 1000 / accel_skip   user-units / sec²
+```
+
+The lowest `accel_skip` is 1, giving the maximum α the current
+`max_omega` allows:
+
+| Max Speed | α_max possible |
+|---:|---:|
+| 40  | ≈ 200 |
+| 60  | ≈ 300 |
+| 80  | ≈ 400 |
+| 100 | ≈ 500 |
+
+If you ask for more in the UI than `α_max` (e.g. α=500 with Max Speed 40),
+the firmware silently clamps to `accel_skip=1`. To unlock faster ramps,
+raise Max Speed first.
+
+### Suggested tuning workflow
+
+1. Detach the camera from the motor shaft (no mechanical load is added,
+   but if your specific rig has friction quirks you'll want them in the
+   loop while characterising).
+2. Run the app, open **DRIVE TUNING**, tick `MANUAL OMEGA OVERRIDE`.
+3. Sweep `Manual omega`: 0 → +Max Speed → 0 → −Max Speed → 0. Watch /
+   listen for stalls.
+4. If stalls happen during the ramp, lower `Acceleration` until clean.
+5. If the motor hits speed without stalls, raise `Max Speed` and repeat.
+6. Untick `MANUAL OMEGA OVERRIDE` when done — camera P-control resumes
+   immediately.
+
+Acceleration is shared with camera mode: whatever you settle on here
+also caps the ramp rate when the camera drives the motor, so it's a
+one-shot tuning step.
+
+### 🧮 Browser-side simulator
+
+Want to feel the parameters before flashing? Open
+[`docs/drive-simulator.html`](docs/drive-simulator.html) in any browser —
+pure-JS replica of the firmware ramp algorithm with three live plots:
+
+- **ω(t)** — the stepwise advance of `cur_v_idx` toward `target_v_idx`
+- **Step pulses** — vertical tick per rising edge on `stepPin`, with
+  zoom buttons (20 ms / 100 ms / full / last 50 ms) and `T₁ T₂ T₃` annotations
+- **T(n)** — period of the n-th pulse in µs (the curve from the original
+  napkin sketch)
+
+Inputs: `Max Speed`, `Acceleration`, `Initial omega`, `Manual omega
+(target)`, `Duration`. Plus quick presets for "rest → max", "reversal",
+"α clamped", "slow ramp" and "small step". Everything is computed with
+the same `vel_table[]`, `accel_skip` formula and Timer2 walk as
+`cameraControl.ino` — so what you see is what the MCU would actually do.
+No build step, no server: just open the file.
+
+---
+
 ## 🧪 Troubleshooting
 
 * **macOS: `cv2.VideoCapture` returns black frames** — the terminal/IDE has no camera permission. Open `System Settings → Privacy & Security → Camera`.

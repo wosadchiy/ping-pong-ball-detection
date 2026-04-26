@@ -115,6 +115,18 @@ class ConfigStore:
         self.is_tracking = False
         self.max_omega = 40.0
 
+        # Drive-tuning controls (sent to Arduino as out-of-band A/M/O
+        # commands — see hardware.py). `accel` is the desired ramp rate in
+        # user-units/sec²; the firmware clamps it against the current
+        # max_omega (effective α_max ≈ max_omega × 5 user-units/sec²).
+        # `manual_omega_active` is intentionally NOT persisted (see
+        # `save_to_json` exclude set below): we want every fresh launch to
+        # start in safe camera-controlled mode, so a left-on override
+        # checkbox can't surprise the user with a spinning shaft.
+        self.accel = 100.0
+        self.manual_omega_active = False
+        self.manual_omega = 0.0
+
         # Привязка USB-UVC камеры на macOS (используется uvc-util для управления
         # экспозицией). Если камер UVC несколько — задайте либо часть имени
         # (например "Global Shutter"), либо точные vendor/product ID. При
@@ -153,6 +165,9 @@ class ConfigStore:
         exclude = {
             "hw_changed", "cam_id_changed",
             "is_recording", "recording_changed",
+            # Drive-tuning override is session-only: each launch starts
+            # in camera mode regardless of how the previous session ended.
+            "manual_omega_active",
         }
         data = {
             k: v for k, v in self.__dict__.items()

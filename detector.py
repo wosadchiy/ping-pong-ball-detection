@@ -68,6 +68,19 @@ class BallDetector:
             self.last_data = (self.f_ax, self.f_ay, self.f_nx, self.f_ny)
             
             cv2.circle(frame, (int(cx), int(cy)), int(radius), (0, 255, 255), 2)
-            cv2.drawMarker(frame, (int(cx), int(cy)), (0, 255, 255), cv2.MARKER_CROSS, 15, 2)
+            # Detector centre cross — blue (BGR) so it doesn't bleed
+            # into a yellow ball; the contour ring stays yellow.
+            cv2.drawMarker(frame, (int(cx), int(cy)), (255, 0, 0), cv2.MARKER_CROSS, 15, 2)
+
+        # Red cross at the EMA-smoothed (nx, ny) — i.e. exactly the pair
+        # that is shipped to the Arduino on every packet (matches the
+        # trajectory plot). Drawn unconditionally so it stays visible
+        # while the ball is briefly lost (firmware also sees the last
+        # value). Y axis is flipped by the detector (positive ny =
+        # above centre), so we subtract to convert back to image coords.
+        sent_x = int(round(cx_f + self.f_nx))
+        sent_y = int(round(cy_f - self.f_ny))
+        cv2.drawMarker(frame, (sent_x, sent_y), (0, 0, 255),
+                       cv2.MARKER_CROSS, 20, 2)
 
         return frame, mask, self.last_data
