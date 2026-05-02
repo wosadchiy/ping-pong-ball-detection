@@ -1,0 +1,1362 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>BallTrackerPro — Closed-Loop Simulator (Simulink-lite)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+         sans-serif; margin: 28px auto; max-width: 1180px; padding: 0 20px;
+         background: #131418; color: #e8e8e8; line-height: 1.55; }
+
+  h1 { font-size: 26px; margin: 0 0 4px; font-weight: 600; letter-spacing: -.2px; }
+  h2 { font-size: 18px; margin: 32px 0 12px; padding-bottom: 6px;
+       border-bottom: 1px solid #2a2c33; font-weight: 600; }
+  h3 { font-size: 14px; margin: 0 0 10px; color: #cdd0d6; font-weight: 600;
+       text-transform: uppercase; letter-spacing: .04em; }
+
+  p, li { font-size: 14px; color: #c0c4ce; }
+  small { color: #7a7f8b; font-size: 12px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace;
+         background: #1c1e25; padding: 1px 6px; border-radius: 3px;
+         color: #e0c177; font-size: 13px; }
+  a { color: #7ab1f5; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .lede { color: #a8acb6; font-size: 14px; max-width: 880px; margin: 0 0 14px; }
+  .back { display: inline-block; margin-bottom: 18px; font-size: 13px;
+          color: #7ab1f5; }
+
+  /* ─── inputs panel ─── */
+  .panel { background: #181a20; border: 1px solid #2a2c33; border-radius: 8px;
+           padding: 18px 22px; margin-bottom: 18px; }
+
+  .panel.sticky { position: sticky; top: 8px; z-index: 50;
+                  background: rgba(24, 26, 32, 0.96);
+                  backdrop-filter: blur(14px) saturate(140%);
+                  -webkit-backdrop-filter: blur(14px) saturate(140%);
+                  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+                  padding: 14px 20px; }
+  .panel.sticky .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .panel.sticky .panel-head h2 {
+    margin: 0; padding: 0; border: none; font-size: 13px;
+    text-transform: uppercase; letter-spacing: .08em; color: #8d92a0;
+  }
+  .panel.sticky .panel-head .hint-tiny {
+    font-size: 11px; color: #6c7080; font-family: ui-monospace, monospace;
+  }
+
+  .controls { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+              gap: 16px 18px; }
+  @media (max-width: 1000px) { .controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 600px)  { .controls { grid-template-columns: minmax(0, 1fr); } }
+
+  .ctrl { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .ctrl label { font-size: 12px; color: #8d92a0; text-transform: uppercase;
+                letter-spacing: .05em; font-weight: 600; }
+  .ctrl .row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .ctrl input[type=range] {
+    flex: 1; min-width: 0; accent-color: #4d9fff;
+    background: transparent; height: 22px;
+  }
+  .ctrl input[type=number] {
+    width: 78px; flex-shrink: 0;
+    background: #0e0f13; color: #e8e8e8;
+    border: 1px solid #2a2c33; border-radius: 4px;
+    padding: 5px 8px; font-family: ui-monospace, monospace;
+    font-size: 13px; text-align: right;
+  }
+  .ctrl input[type=number]:focus { outline: none; border-color: #4d9fff; }
+  .ctrl select {
+    width: 100%; background: #0e0f13; color: #e8e8e8;
+    border: 1px solid #2a2c33; border-radius: 4px;
+    padding: 5px 8px; font-family: ui-monospace, monospace;
+    font-size: 13px;
+  }
+  .ctrl .unit { font-size: 11px; color: #6c7080; line-height: 1.4;
+                overflow-wrap: anywhere; }
+
+  .preset-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px;
+                align-items: center; }
+  .preset-row .lab { font-size: 11px; color: #8d92a0; text-transform: uppercase;
+                     letter-spacing: .05em; font-weight: 600; margin-right: 4px; }
+  .preset-row button {
+    background: #1c1e25; color: #c0c4ce; border: 1px solid #2a2c33;
+    border-radius: 4px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+    font-family: inherit;
+  }
+  .preset-row button:hover { background: #232631; color: #e8e8e8; }
+
+  /* ─── computed badges ─── */
+  .badges { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px;
+            margin-top: 14px; }
+  @media (max-width: 1000px) { .badges { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px)  { .badges { grid-template-columns: minmax(0, 1fr); } }
+
+  .badge { background: #0e0f13; border: 1px solid #2a2c33; border-radius: 6px;
+           padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; }
+  .badge .lab { font-size: 11px; color: #7a7f8b; text-transform: uppercase;
+                letter-spacing: .05em; }
+  .badge .val { font-size: 17px; color: #e8e8e8; font-family: ui-monospace, monospace;
+                font-weight: 600; }
+  .badge .sub { font-size: 11px; color: #6c7080; font-family: ui-monospace, monospace; }
+  .badge.warn { border-color: #574020; background: #2a1f0c; }
+  .badge.warn .val { color: #ffb84d; }
+  .badge.ok   { border-color: #1f5a3e; background: #0d251a; }
+  .badge.ok   .val { color: #4dd29a; }
+  .badge.bad  { border-color: #5a1f1f; background: #2a0e0e; }
+  .badge.bad  .val { color: #ff7b6e; }
+
+  /* ─── plots ─── */
+  .plot-wrap { background: #0c0d11; border: 1px solid #2a2c33; border-radius: 8px;
+               padding: 14px; margin-bottom: 16px; }
+  .plot-wrap h3 { display: flex; align-items: center; gap: 10px; }
+  .plot-wrap canvas { display: block; width: 100%; height: 280px;
+                      background: #0c0d11; }
+  .plot-wrap .legend { display: flex; gap: 18px; flex-wrap: wrap;
+                       font-size: 11px; color: #8d92a0; margin-top: 8px;
+                       font-family: ui-monospace, monospace; }
+  .plot-wrap .legend .sw {
+    display: inline-block; width: 12px; height: 3px; border-radius: 1px;
+    vertical-align: middle; margin-right: 5px;
+  }
+  .plot-wrap .desc { font-size: 12px; color: #7a7f8b; margin: 4px 0 10px; }
+
+  .formula { background: #0e0f13; border: 1px solid #2a2c33;
+             border-left: 3px solid #4d9fff; padding: 12px 16px;
+             border-radius: 6px; margin: 10px 0; font-size: 13px;
+             color: #d8dde8; font-family: ui-monospace, monospace;
+             line-height: 1.7; }
+  .formula b { color: #ffcc00; font-weight: 600; }
+
+  .note { background: #14161c; border: 1px solid #2a2c33; border-radius: 6px;
+          padding: 12px 16px; font-size: 13px; color: #c0c4ce; margin: 10px 0; }
+  .note b { color: #e8e8e8; }
+
+  /* ─── Simulink-style FBD (Functional Block Diagram) ─── */
+  .fbd-wrap { background: #f0f1f3; border: 1px solid #2a2c33;
+              border-radius: 8px; padding: 14px 14px 8px;
+              margin-bottom: 16px; }
+  .fbd-wrap .fbd-head { display: flex; justify-content: space-between;
+                        align-items: baseline; margin-bottom: 6px; }
+  .fbd-wrap .fbd-head h3 { color: #2a2c33; font-size: 13px;
+                           text-transform: uppercase; letter-spacing: .04em; }
+  .fbd-wrap .fbd-head .hint { color: #5a5e6a; font-size: 11px;
+                              font-family: ui-monospace, monospace; }
+  .fbd-wrap svg { display: block; width: 100%; height: auto; }
+  .fbd-wrap .fbd-legend { font-size: 11px; color: #5a5e6a;
+                          font-family: ui-monospace, monospace;
+                          margin-top: 4px; padding: 6px 4px 0;
+                          border-top: 1px dashed #cdd0d6;
+                          display: flex; gap: 16px; flex-wrap: wrap; }
+  .fbd-wrap .fbd-legend b { color: #2a2c33; }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #23262d; }
+  th { color: #8d92a0; font-weight: 600; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .04em; }
+  td code { background: #14161c; }
+
+  footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #2a2c33;
+           color: #6c7080; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<a class="back" href="control-system.html">← Back to Control System</a>
+
+<h1>Closed-Loop Simulator</h1>
+<p class="lede">
+  Численный симулятор замкнутого контура «мяч → камера → Python → Arduino →
+  мотор → крепление → камера». Реализованы все блоки из
+  <a href="structural-diagram.html">structural-diagram.html</a>: оптическая
+  проекция, EMA-фильтр, чистые задержки детектора и Serial TX,
+  П-регулятор с насыщением, ramp-limiter Timer2, преобразование шагов в
+  угловую скорость и интегрирование в угол камеры. На входе —
+  синусоидальное «движение мяча» амплитуды <code>amp · 320 px</code>.
+  На графике — задание (жёлтое) и отработка (красное).
+</p>
+
+<!-- ============================================================ -->
+<!-- 1. INPUTS (sticky)                                           -->
+<!-- ============================================================ -->
+
+<div class="panel sticky">
+  <div class="panel-head">
+    <h2>Параметры</h2>
+    <span class="hint-tiny">тяните любой слайдер — графики пересчитываются мгновенно</span>
+  </div>
+  <div class="controls">
+    <!-- ── INPUT SIGNAL ── -->
+    <div class="ctrl">
+      <label>Частота мяча, Гц</label>
+      <div class="row">
+        <input id="freq_s" type="range"  min="0.05" max="5" step="0.05" value="0.5">
+        <input id="freq_n" type="number" min="0.05" max="5" step="0.05" value="0.5">
+      </div>
+      <span class="unit">f, Гц · период 1/f с</span>
+    </div>
+
+    <div class="ctrl">
+      <label>Амплитуда (× 320 px)</label>
+      <div class="row">
+        <input id="amp_s" type="range"  min="0.05" max="2" step="0.05" value="1.0">
+        <input id="amp_n" type="number" min="0.05" max="2" step="0.05" value="1.0">
+      </div>
+      <span class="unit">amp · L = пиксели на полу-кадр</span>
+    </div>
+
+    <!-- ── REGULATOR ── -->
+    <div class="ctrl">
+      <label>K_p (proportional)</label>
+      <div class="row">
+        <input id="kp_s" type="range"  min="0" max="3" step="0.01" value="0.45">
+        <input id="kp_n" type="number" min="0" max="5" step="0.01" value="0.45">
+      </div>
+      <span class="unit">безразмерно · 0.45 — экспер. предел</span>
+    </div>
+
+    <!-- ── EMA FILTER ── -->
+    <div class="ctrl">
+      <label>T_ф (EMA), мс</label>
+      <div class="row">
+        <input id="tf_s" type="range"  min="0" max="100" step="1" value="27">
+        <input id="tf_n" type="number" min="0" max="100" step="1" value="27">
+      </div>
+      <span class="unit">постоянная EMA · 27 мс ≈ α=0.25 при 150 Hz</span>
+    </div>
+
+    <!-- ── DURATION ── -->
+    <div class="ctrl">
+      <label>Длительность, с</label>
+      <div class="row">
+        <input id="tsim_s" type="range"  min="2" max="20" step="0.5" value="10">
+        <input id="tsim_n" type="number" min="2" max="20" step="0.5" value="10">
+      </div>
+      <span class="unit">T_sim · больше = больше циклов для метрик</span>
+    </div>
+
+    <!-- ── DRIVE PARAMS ── -->
+    <div class="ctrl">
+      <label>ω_max (user/c)</label>
+      <div class="row">
+        <input id="omegaMax_s" type="range"  min="10" max="200" step="5" value="100">
+        <input id="omegaMax_n" type="number" min="10" max="200" step="1" value="100">
+      </div>
+      <span class="unit">потолок скорости вала</span>
+    </div>
+
+    <div class="ctrl">
+      <label>α ramp (user/c²)</label>
+      <div class="row">
+        <input id="alphaRamp_s" type="range"  min="10" max="2000" step="10" value="500">
+        <input id="alphaRamp_n" type="number" min="10" max="2000" step="10" value="500">
+      </div>
+      <span class="unit">ограничение |dω/dt|</span>
+    </div>
+
+    <div class="ctrl">
+      <label>Микрошаг μ</label>
+      <div class="row">
+        <select id="muStep_n">
+          <option value="1">1 (full step)</option>
+          <option value="2">1/2</option>
+          <option value="4">1/4</option>
+          <option value="8">1/8</option>
+          <option value="16" selected>1/16</option>
+          <option value="32">1/32</option>
+        </select>
+      </div>
+      <span class="unit">N_step = 200 · μ · влияет на K_шд</span>
+    </div>
+
+    <div class="ctrl">
+      <label>i_red (редуктор)</label>
+      <div class="row">
+        <input id="iRed_s" type="range"  min="0.1" max="20" step="0.1" value="1.0">
+        <input id="iRed_n" type="number" min="0.1" max="100" step="0.1" value="1.0">
+      </div>
+      <span class="unit">θ_cam = θ_вал / i_red</span>
+    </div>
+
+    <!-- ── DELAYS ── -->
+    <div class="ctrl">
+      <label>τ_дет, мс</label>
+      <div class="row">
+        <input id="tauDet_s" type="range"  min="0" max="50" step="1" value="8">
+        <input id="tauDet_n" type="number" min="0" max="100" step="1" value="8">
+      </div>
+      <span class="unit">камера + OpenCV pipeline</span>
+    </div>
+
+    <div class="ctrl">
+      <label>τ_тх, мс</label>
+      <div class="row">
+        <input id="tauTx_s" type="range"  min="0" max="20" step="0.5" value="4">
+        <input id="tauTx_n" type="number" min="0" max="50" step="0.5" value="4">
+      </div>
+      <span class="unit">USB serial 115200 baud</span>
+    </div>
+
+    <!-- ── INTEGRATION STEP ── -->
+    <div class="ctrl">
+      <label>Шаг dt, мс</label>
+      <div class="row">
+        <input id="dt_s" type="range"  min="0.1" max="2" step="0.1" value="0.5">
+        <input id="dt_n" type="number" min="0.1" max="5" step="0.1" value="0.5">
+      </div>
+      <span class="unit">меньше = точнее, медленнее</span>
+    </div>
+  </div>
+
+  <div class="preset-row">
+    <span class="lab">Пресеты:</span>
+    <button data-preset="current">Текущий setup (ваш)</button>
+    <button data-preset="lowema">EMA пополам (T_ф=14)</button>
+    <button data-preset="noema">Без EMA (T_ф=1)</button>
+    <button data-preset="high-kp">K_p = 1.0 (раскачка)</button>
+    <button data-preset="slow-ball">Медленный мяч (0.2 Гц)</button>
+    <button data-preset="fast-ball">Быстрый мяч (2 Гц)</button>
+    <button data-preset="real-cal">Под реальную раскачку (μ=2)</button>
+  </div>
+
+  <div class="badges">
+    <div class="badge"          id="b_period"><span class="lab">Период мяча</span><span class="val" id="b_period_v">2.00 c</span><span class="sub" id="b_period_s">f = 0.50 Гц</span></div>
+    <div class="badge"          id="b_delay"> <span class="lab">Σ задержка</span><span class="val" id="b_delay_v">39 мс</span> <span class="sub" id="b_delay_s">τ_дет + τ_тх + T_ф</span></div>
+    <div class="badge"          id="b_kloop"> <span class="lab">K_loop (DC)</span><span class="val" id="b_kloop_v">0.30 1/c</span><span class="sub" id="b_kloop_s">по полной цепочке</span></div>
+    <div class="badge"          id="b_gain">  <span class="lab">|H(jω)|</span>      <span class="val" id="b_gain_v">— дБ</span>  <span class="sub" id="b_gain_s">амплитудное усиление</span></div>
+    <div class="badge"          id="b_phase"> <span class="lab">Фазовое отстав.</span><span class="val" id="b_phase_v">— °</span>   <span class="sub" id="b_phase_s">x_cam отстает от x_ball</span></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 1.5. FBD (Simulink-style functional block diagram, live)     -->
+<!-- ============================================================ -->
+
+<div class="fbd-wrap">
+  <div class="fbd-head">
+    <h3>Functional Block Diagram (Simulink-style, live)</h3>
+    <span class="hint">все коэффициенты обновляются по слайдерам</span>
+  </div>
+  <svg viewBox="0 0 1360 360" xmlns="http://www.w3.org/2000/svg"
+       font-family="ui-monospace, Menlo, monospace">
+    <defs>
+      <marker id="fbd-ar" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#2a2c33"/>
+      </marker>
+      <marker id="fbd-ar-fb" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#c25c00"/>
+      </marker>
+      <!-- block style template -->
+      <style>
+        .fbd-block { fill: #ffffff; stroke: #2a2c33; stroke-width: 1.4; }
+        .fbd-summator { fill: #ffffff; stroke: #2a2c33; stroke-width: 1.6; }
+        .fbd-sigma { font-size: 18px; fill: #2a2c33; text-anchor: middle; }
+        .fbd-sign  { font-size: 12px; fill: #2a2c33; font-weight: 700; }
+        .fbd-title { font-size: 10px; fill: #5a5e6a; text-anchor: middle;
+                     text-transform: uppercase; letter-spacing: .04em; }
+        .fbd-formula { font-size: 12px; fill: #14233a; text-anchor: middle;
+                       font-weight: 600; }
+        .fbd-value   { font-size: 11px; fill: #c25c00; text-anchor: middle;
+                       font-weight: 600; }
+        .fbd-aux     { font-size: 10px; fill: #5a5e6a; text-anchor: middle; }
+        .fbd-wire    { stroke: #2a2c33; stroke-width: 1.4; fill: none; }
+        .fbd-wire-fb { stroke: #c25c00; stroke-width: 1.4; fill: none;
+                       stroke-dasharray: 6 4; }
+        .fbd-sig-lab { font-size: 10px; fill: #5a5e6a; }
+        .fbd-band    { fill: #f9c74f; opacity: 0.18; }
+        .fbd-band-py { fill: #4d9fff; opacity: 0.10; }
+        .fbd-band-ar { fill: #ff8c4d; opacity: 0.10; }
+        .fbd-band-ph { fill: #888888; opacity: 0.10; }
+        .fbd-band-lab{ font-size: 9px; fill: #5a5e6a;
+                       text-transform: uppercase; letter-spacing: .08em; }
+      </style>
+    </defs>
+
+    <!-- ─── colored bands (host / mcu / physical) ─── -->
+    <rect class="fbd-band-py" x="14"  y="42" width="494" height="100" rx="6"/>
+    <text class="fbd-band-lab" x="22"  y="55">Python host</text>
+    <rect class="fbd-band-ar" x="520" y="42" width="568" height="100" rx="6"/>
+    <text class="fbd-band-lab" x="528" y="55">Arduino MCU</text>
+    <rect class="fbd-band-ph" x="1100" y="42" width="246" height="100" rx="6"/>
+    <text class="fbd-band-lab" x="1108" y="55">Physical</text>
+
+    <!-- ============== blocks ============== -->
+
+    <!-- 1. Sine source -->
+    <g>
+      <text class="fbd-title" x="70" y="70">SINE WAVE</text>
+      <rect class="fbd-block" x="20" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="70" y="100">A·sin(2πf·t)</text>
+      <text class="fbd-value"   x="70" y="118"><tspan id="fbd_sine_amp">320</tspan>·sin(2π·<tspan id="fbd_sine_freq">0.50</tspan>·t)</text>
+      <text class="fbd-aux"     x="70" y="134">источник [px]</text>
+    </g>
+
+    <!-- 2. Σ summator -->
+    <g>
+      <circle class="fbd-summator" cx="148" cy="110" r="20"/>
+      <text class="fbd-sigma"     x="148" y="116">Σ</text>
+      <text class="fbd-sign"      x="128" y="100">+</text>
+      <text class="fbd-sign"      x="158" y="138">−</text>
+    </g>
+
+    <!-- 3. Detector delay -->
+    <g>
+      <text class="fbd-title" x="226" y="70">CAMERA + CV</text>
+      <rect class="fbd-block" x="176" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="226" y="100">e^(−τ_д·s)</text>
+      <text class="fbd-value"   x="226" y="118">τ_д = <tspan id="fbd_taudet">8</tspan> мс</text>
+      <text class="fbd-aux"     x="226" y="134">transport delay</text>
+    </g>
+
+    <!-- 4. EMA filter -->
+    <g>
+      <text class="fbd-title" x="346" y="70">EMA FILTER</text>
+      <rect class="fbd-block" x="296" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="346" y="100">1/(T_ф·s+1)</text>
+      <text class="fbd-value"   x="346" y="118">T_ф = <tspan id="fbd_tf">27</tspan> мс</text>
+      <text class="fbd-aux"     x="346" y="134">1-pole low-pass</text>
+    </g>
+
+    <!-- 5. Serial TX delay -->
+    <g>
+      <text class="fbd-title" x="466" y="70">SERIAL TX</text>
+      <rect class="fbd-block" x="416" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="466" y="100">e^(−τ_т·s)</text>
+      <text class="fbd-value"   x="466" y="118">τ_т = <tspan id="fbd_tautx">4</tspan> мс</text>
+      <text class="fbd-aux"     x="466" y="134">USB 115200 bd</text>
+    </g>
+
+    <!-- 6. Normalize -->
+    <g>
+      <text class="fbd-title" x="586" y="70">NORMALIZE</text>
+      <rect class="fbd-block" x="536" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="586" y="100">1 / L</text>
+      <text class="fbd-value"   x="586" y="118">L = 320 px</text>
+      <text class="fbd-aux"     x="586" y="134">err ∈ [−1, +1]</text>
+    </g>
+
+    <!-- 7. P-controller -->
+    <g>
+      <text class="fbd-title" x="706" y="70">P-CONTROLLER</text>
+      <rect class="fbd-block" x="656" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="706" y="100">K_p · ω_max</text>
+      <text class="fbd-value"   x="706" y="118"><tspan id="fbd_kp">0.45</tspan> · <tspan id="fbd_wmax">100</tspan></text>
+      <text class="fbd-aux"     x="706" y="134">= <tspan id="fbd_p_prod">45.00</tspan> [user/c]</text>
+    </g>
+
+    <!-- 8. Saturation -->
+    <g>
+      <text class="fbd-title" x="826" y="70">SATURATION</text>
+      <rect class="fbd-block" x="776" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="826" y="100">clamp(±ω_max)</text>
+      <text class="fbd-value"   x="826" y="118">[−<tspan id="fbd_sat_neg">100</tspan>, +<tspan id="fbd_sat_pos">100</tspan>]</text>
+      <text class="fbd-aux"     x="826" y="134">hard limit</text>
+    </g>
+
+    <!-- 9. Rate limiter -->
+    <g>
+      <text class="fbd-title" x="946" y="70">RATE LIMITER</text>
+      <rect class="fbd-block" x="896" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="946" y="100">|dω/dt| ≤ α</text>
+      <text class="fbd-value"   x="946" y="118">α = <tspan id="fbd_alpha">500</tspan></text>
+      <text class="fbd-aux"     x="946" y="134">Timer2 ramp</text>
+    </g>
+
+    <!-- 10. Stepper gain -->
+    <g>
+      <text class="fbd-title" x="1066" y="70">STEPPER GAIN</text>
+      <rect class="fbd-block" x="1016" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="1066" y="100">2π·89.5/N_s</text>
+      <text class="fbd-value"   x="1066" y="118"><tspan id="fbd_kstep">0.176</tspan> rad/c</text>
+      <text class="fbd-aux"     x="1066" y="134">μ = <tspan id="fbd_mu">16</tspan></text>
+    </g>
+
+    <!-- 11. Mount integrator -->
+    <g>
+      <text class="fbd-title" x="1186" y="70">MOUNT INTEG.</text>
+      <rect class="fbd-block" x="1136" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="1186" y="100">1 / (i_red·s)</text>
+      <text class="fbd-value"   x="1186" y="118">i_red = <tspan id="fbd_ired">1.00</tspan></text>
+      <text class="fbd-aux"     x="1186" y="134">→ θ_cam [rad]</text>
+    </g>
+
+    <!-- 12. Lens projection (feedback gain) -->
+    <g>
+      <text class="fbd-title" x="1306" y="70">LENS PROJ.</text>
+      <rect class="fbd-block" x="1256" y="78" width="100" height="64" rx="3"/>
+      <text class="fbd-formula" x="1306" y="100">K_л [px/rad]</text>
+      <text class="fbd-value"   x="1306" y="118">= 539.25</text>
+      <text class="fbd-aux"     x="1306" y="134">small-angle</text>
+    </g>
+
+    <!-- ============== signal wires (forward) ============== -->
+    <g>
+      <line class="fbd-wire" x1="120"  y1="110" x2="128"  y2="110" marker-end="url(#fbd-ar)"/>
+      <text class="fbd-sig-lab" x="124" y="106" text-anchor="middle">x_b</text>
+      <line class="fbd-wire" x1="168"  y1="110" x2="176"  y2="110" marker-end="url(#fbd-ar)"/>
+      <text class="fbd-sig-lab" x="172" y="106" text-anchor="middle">ε</text>
+      <line class="fbd-wire" x1="276"  y1="110" x2="296"  y2="110" marker-end="url(#fbd-ar)"/>
+      <line class="fbd-wire" x1="396"  y1="110" x2="416"  y2="110" marker-end="url(#fbd-ar)"/>
+      <line class="fbd-wire" x1="516"  y1="110" x2="536"  y2="110" marker-end="url(#fbd-ar)"/>
+      <text class="fbd-sig-lab" x="526" y="106" text-anchor="middle">nx</text>
+      <line class="fbd-wire" x1="636"  y1="110" x2="656"  y2="110" marker-end="url(#fbd-ar)"/>
+      <text class="fbd-sig-lab" x="646" y="106" text-anchor="middle">err</text>
+      <line class="fbd-wire" x1="756"  y1="110" x2="776"  y2="110" marker-end="url(#fbd-ar)"/>
+      <text class="fbd-sig-lab" x="766" y="106" text-anchor="middle">ω_t</text>
+      <line class="fbd-wire" x1="876"  y1="110" x2="896"  y2="110" marker-end="url(#fbd-ar)"/>
+      <line class="fbd-wire" x1="996"  y1="110" x2="1016" y2="110" marker-end="url(#fbd-ar)"/>
+      <text class="fbd-sig-lab" x="1006" y="106" text-anchor="middle">ω</text>
+      <line class="fbd-wire" x1="1116" y1="110" x2="1136" y2="110" marker-end="url(#fbd-ar)"/>
+      <text class="fbd-sig-lab" x="1126" y="106" text-anchor="middle">θ̇</text>
+      <line class="fbd-wire" x1="1236" y1="110" x2="1256" y2="110" marker-end="url(#fbd-ar)"/>
+      <text class="fbd-sig-lab" x="1246" y="106" text-anchor="middle">θ</text>
+    </g>
+
+    <!-- output tap & external arrow -->
+    <circle cx="1356" cy="110" r="3" fill="#2a2c33"/>
+    <text class="fbd-sig-lab" x="1356" y="74" text-anchor="end">x_cam → out</text>
+
+    <!-- ============== feedback wire (orange dashed, U-shape) ============== -->
+    <path class="fbd-wire-fb" d="M 1356,110 L 1356,210 L 148,210 L 148,132"
+          marker-end="url(#fbd-ar-fb)"/>
+    <text class="fbd-sig-lab" x="700" y="226" text-anchor="middle"
+          style="fill:#c25c00;">обратная связь · x_cam_px</text>
+
+    <!-- ============== currently-active K_loop callout ============== -->
+    <g>
+      <rect x="20" y="266" width="350" height="80" rx="6"
+            fill="#fff4d6" stroke="#c69300" stroke-width="1.2"/>
+      <text x="36" y="288" font-size="11" fill="#5a4200"
+            font-weight="700">Открытый коэф. петли (DC):</text>
+      <text x="36" y="312" font-size="14" fill="#14233a"
+            font-family="ui-monospace, monospace" font-weight="700">
+        K_open = K_p · ω_max · K_шд · K_л / (L · i_red)
+      </text>
+      <text x="36" y="334" font-size="13" fill="#c25c00"
+            font-family="ui-monospace, monospace" font-weight="700">
+        = <tspan id="fbd_kopen">13.33</tspan> 1/c · полоса ≈ <tspan id="fbd_bw">2.12</tspan> Гц
+      </text>
+    </g>
+
+    <g>
+      <rect x="386" y="266" width="350" height="80" rx="6"
+            fill="#e0f0ff" stroke="#2a5288" stroke-width="1.2"/>
+      <text x="402" y="288" font-size="11" fill="#1a3a5c"
+            font-weight="700">Эквив. чистая задержка тракта:</text>
+      <text x="402" y="312" font-size="14" fill="#14233a"
+            font-family="ui-monospace, monospace" font-weight="700">
+        τ_eq = τ_д + T_ф + τ_т
+      </text>
+      <text x="402" y="334" font-size="13" fill="#2a5288"
+            font-family="ui-monospace, monospace" font-weight="700">
+        = <tspan id="fbd_taueq">39</tspan> мс (для расчёта φ_m)
+      </text>
+    </g>
+
+    <g>
+      <rect x="752" y="266" width="350" height="80" rx="6"
+            fill="#e7f5e8" stroke="#2d7a3a" stroke-width="1.2"/>
+      <text x="768" y="288" font-size="11" fill="#1a4a25"
+            font-weight="700">Расчёт. запас по фазе на ω_c:</text>
+      <text x="768" y="312" font-size="14" fill="#14233a"
+            font-family="ui-monospace, monospace" font-weight="700">
+        φ_m ≈ 90° − atan(ω_c·T_ф) − ω_c·τ_pure·180°/π
+      </text>
+      <text x="768" y="334" font-size="13" fill="#2d7a3a"
+            font-family="ui-monospace, monospace" font-weight="700">
+        ≈ <tspan id="fbd_phi_m">52</tspan>°  (60°+ — устойчиво, &lt;30° — на грани)
+      </text>
+    </g>
+  </svg>
+
+  <div class="fbd-legend">
+    <span><b>Синим</b> — Python host (камера, EMA, serial TX)</span>
+    <span><b>Оранжевым</b> — Arduino MCU (parser, P-control, ramp, pulses)</span>
+    <span><b>Серым</b> — physical (мотор, кинематика, оптика)</span>
+    <span><b>Оранжевая пунктирная</b> — обратная связь (визуальная)</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 2. PLOT 1: TRACKING (the main one)                           -->
+<!-- ============================================================ -->
+
+<div class="plot-wrap">
+  <h3>
+    <span style="color:#ffcc00;">●</span> Задание&nbsp;&nbsp;
+    <span style="color:#ff7b6e;">●</span> Отработка
+  </h3>
+  <p class="desc">
+    Задание <code>x_ball(t) = amp · 320 · sin(2π·f·t)</code> — где «реально»
+    мяч в пиксельной системе кадра при неподвижной камере. Отработка
+    <code>x_cam_apparent(t) = K_л · θ_cam(t)</code> — на сколько физически
+    повернулась камера, переведённое обратно в пиксели. Если контур
+    идеален — обе линии сливаются. Реально между ними есть
+    амплитудное и фазовое отставание из-за EMA, задержек и
+    динамики мотора.
+  </p>
+  <canvas id="plotTracking"></canvas>
+  <div class="legend">
+    <span><span class="sw" style="background:#ffcc00;"></span>x_ball — задание (px)</span>
+    <span><span class="sw" style="background:#ff7b6e;"></span>x_cam — фактическая отработка (px)</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 3. PLOT 2: ERROR                                             -->
+<!-- ============================================================ -->
+
+<div class="plot-wrap">
+  <h3>
+    <span style="color:#4dd29a;">●</span> Ошибка слежения ε(t) = x_ball − x_cam
+  </h3>
+  <p class="desc">
+    Мгновенная пиксельная ошибка — то что детектор увидит в кадре.
+    Нулевая средняя — означает что регулятор «в среднем» успевает.
+    Колебания — амплитуда, на которую мяч уходит от центра кадра
+    при текущей частоте/настройке.
+  </p>
+  <canvas id="plotError"></canvas>
+  <div class="legend">
+    <span><span class="sw" style="background:#4dd29a;"></span>ε(t) — пиксельная ошибка</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 4. PLOT 3: OMEGA COMMAND                                     -->
+<!-- ============================================================ -->
+
+<div class="plot-wrap">
+  <h3>
+    <span style="color:#4d9fff;">●</span> Команда мотору ω(t) — после ramp-limiter
+  </h3>
+  <p class="desc">
+    То что Arduino фактически отправит в Timer2 (после насыщения и
+    ограничения скорости нарастания). Если ω бьётся в потолок ±ω_max —
+    это означает, что мяч движется быстрее, чем мотор физически может
+    отрабатывать.
+  </p>
+  <canvas id="plotOmega"></canvas>
+  <div class="legend">
+    <span><span class="sw" style="background:#4d9fff;"></span>ω(t) — команда (user/c)</span>
+    <span><span class="sw" style="background:#5d626d; opacity:.6;"></span>±ω_max — потолок насыщения</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 5. NOTES                                                     -->
+<!-- ============================================================ -->
+
+<h2>Модель симуляции</h2>
+
+<div class="formula">
+  <b>Численная схема — явный Эйлер на сетке Δt</b><br><br>
+  на каждом такте k:<br>
+  &nbsp;&nbsp;1. <span style="color:#ffcc00;">x_ball</span> = amp · 320 · sin(ωt)<br>
+  &nbsp;&nbsp;2. <span style="color:#ff7b6e;">x_cam</span> = K_л · θ_cam &nbsp;<i>(K_л = 539 px/рад)</i><br>
+  &nbsp;&nbsp;3. ε = x_ball − x_cam &nbsp;<i>(пиксельная ошибка в кадре)</i><br>
+  &nbsp;&nbsp;4. ε_det ← circular delay buffer (τ_дет)<br>
+  &nbsp;&nbsp;5. ema += Δt·(ε_det − ema) / T_ф &nbsp;<i>(непрерывная аппроксимация EMA)</i><br>
+  &nbsp;&nbsp;6. nx ← circular delay buffer (τ_тх)<br>
+  &nbsp;&nbsp;7. err = nx / L &nbsp;<i>(L = 320)</i><br>
+  &nbsp;&nbsp;8. ω_t = err · K_p · ω_max<br>
+  &nbsp;&nbsp;9. ω_t = clamp(ω_t, ±ω_max)<br>
+  10. ω = rate-limit(ω_t, |dω/dt| ≤ α)<br>
+  11. θ̇_вал = (2π / N_step) · 89.5 · ω &nbsp;<i>(N_step = 200·μ)</i><br>
+  12. θ_cam += Δt · θ̇_вал / i_red
+</div>
+
+<div class="note">
+  <b>Что не моделируется (важно для интерпретации):</b>
+  <ul>
+    <li>Дискретизация камеры (ZOH): моделируется только эквивалентной задержкой τ_дет; дрожание частоты кадров не учитывается.</li>
+    <li>Шаговик считается «идеальным» — без потери шагов, без электромагнитной инерции обмотки (≈ 1–2 мс), без момента инерции вала, <b>без резонансных частот</b> ротора (типичные 100–300 Hz).</li>
+    <li>Дискретный шум детекции (≈ ±1 px на cv2.minEnclosingCircle) — отсутствует.</li>
+    <li>Дискретизация EMA по фактической частоте логического потока (60–180 Hz) — заменена на непрерывный фильтр 1-го порядка с эквивалентной T_ф.</li>
+    <li>Квантование <code>vel_table[]</code> — пренебрежимо при V_TABLE_N = 200.</li>
+    <li><b>Pade-аппроксимация запаздываний</b> не используется — задержки реализованы как точные кольцевые буферы. Это даёт более точный результат чем s-domain Pade в Simulink.</li>
+  </ul>
+</div>
+
+<div class="note" style="border-left: 3px solid #ffb84d; background: #2a1f0c;">
+  <b style="color: #ffcc00;">⚠ Калибровка под реальную систему.</b>
+  Дефолтный пресет (μ=16, i_red=1) даёт K_loop ≈ 13 1/c — модель показывает
+  K_p = 0.45 как «уверенно стабильный». Если на вашем стенде K_p = 0.45 уже
+  раскачивается — значит ваш реальный K_step выше моего предположения
+  (например, μ = 2 вместо 16, или i_red &lt; 1 при ускоряющей передаче).
+  Используйте пресет <b>«Под реальную раскачку (μ=2)»</b> или вручную
+  подберите <code>μ_step</code> и <code>i_red</code> так, чтобы при
+  <code>K_p = ваш_экспериментальный_предел</code> симуляция показывала
+  переходный процесс с σ ≈ 30–50% — это и будет калиброванная модель.
+  После этого предсказания симулятора (по K_p, T_ф, частоте мяча) будут
+  применимы к реальности.
+</div>
+
+<div class="note">
+  <b>Интерпретация метрик:</b>
+  <ul>
+    <li><b>|H(jω)|</b> — амплитудное усиление контура на частоте мяча. 0 дБ = идеальное следование, −3 дБ = выход на 70% от задания, −6 дБ = на 50%. Полоса пропускания контура — где |H| падает до −3 дБ.</li>
+    <li><b>Фазовое отставание</b> — на сколько градусов x_cam запаздывает за x_ball. Эквивалент по времени: φ° / (360°·f) секунд.</li>
+    <li><b>K_loop (DC)</b> — статический коэффициент усиления разомкнутой петли. На очень низких частотах 1/(1+K_loop) определяет установившуюся ошибку при постоянном смещении.</li>
+  </ul>
+</div>
+
+<h2>Что попробовать</h2>
+
+<ol>
+  <li><b>Параметры по умолчанию</b> (ваш текущий setup) — увидите как при K_p=0.45 и f=0.5 Гц система отслеживает с заметным отставанием по фазе и амплитуде. Это «реальность».</li>
+  <li><b>Уменьшите T_ф до 14 мс</b> — амплитудное и фазовое отставание сразу падает, потому что главный пожиратель фазы — EMA.</li>
+  <li><b>Поставьте T_ф = 1 мс</b> (фактически без EMA) — и увидите, что K_p=0.45 теперь даёт почти идеальное следование. Это показывает: «грань устойчивости» определяет EMA, а не сам мотор.</li>
+  <li><b>Поднимите K_p до 1.0</b> с дефолтным T_ф=27 мс — увидите перерегулирование/колебания. Граница устойчивости.</li>
+  <li><b>Частота мяча 2 Гц</b> — увидите, что даже с хорошим setup'ом контур отрабатывает только 30–50% амплитуды. Полоса пропускания контура ≈ 1–2 Гц.</li>
+  <li><b>Микрошаг 1 (full step)</b> — заметите как уменьшение N_step увеличивает K_шд, а значит и K_loop — система может стать менее устойчивой при том же K_p.</li>
+</ol>
+
+<footer>
+  Pure-JS, без зависимостей. Источник истины для модели:
+  <a href="structural-diagram.html">structural-diagram.html</a>. Связанные:
+  <a href="control-system.html">control-system.html</a> (поток данных) ·
+  <a href="drive-simulator.html">drive-simulator.html</a> (изолированный
+  Timer2/vel_table симулятор привода).
+</footer>
+
+<!-- ============================================================ -->
+<!-- 6. SCRIPT — simulation + plotting                            -->
+<!-- ============================================================ -->
+
+<script>
+"use strict";
+
+// ─────────── system constants (must mirror cameraControl.ino + detector.py) ───────────
+const L = 320;                  // SENSOR_HALF_WIDTH_PX
+const FOV_X_DEG = 68;
+const FRAME_WIDTH = 640;
+// K_lens [px/rad] — projection of small angles to pixels at sensor centre
+const K_LENS = (FRAME_WIDTH / 2) / (FOV_X_DEG / 2 * Math.PI / 180);
+const STEP_PER_USER = 89.5;     // 1 user-unit = 89.5 step/sec  (vel_table calibration)
+const STEPS_PER_REV_BASE = 200; // typical NEMA-17 motor
+
+// ─────────── parameter <-> DOM helpers ───────────
+const PARAMS = [
+  // { id, default, type } — single source of truth for slider/number wiring
+  { id: "freq",       def: 0.50 },
+  { id: "amp",        def: 1.00 },
+  { id: "kp",         def: 0.45 },
+  { id: "tf",         def: 27 },     // ms
+  { id: "tsim",       def: 10 },     // s
+  { id: "omegaMax",   def: 100 },
+  { id: "alphaRamp",  def: 500 },
+  { id: "muStep",     def: 16, kind: "select" },
+  { id: "iRed",       def: 1.0 },
+  { id: "tauDet",     def: 8 },      // ms
+  { id: "tauTx",      def: 4 },      // ms
+  { id: "dt",         def: 0.5 },    // ms
+];
+
+const PRESETS = {
+  current:    { freq: 0.50, amp: 1.0, kp: 0.45, tf: 27, omegaMax: 100, alphaRamp: 500, muStep: 16, iRed: 1.0, tauDet: 8, tauTx: 4, dt: 0.5, tsim: 10 },
+  lowema:     { freq: 0.50, amp: 1.0, kp: 0.45, tf: 14, omegaMax: 100, alphaRamp: 500, muStep: 16, iRed: 1.0, tauDet: 8, tauTx: 4, dt: 0.5, tsim: 10 },
+  noema:      { freq: 0.50, amp: 1.0, kp: 0.45, tf:  1, omegaMax: 100, alphaRamp: 500, muStep: 16, iRed: 1.0, tauDet: 8, tauTx: 4, dt: 0.5, tsim: 10 },
+  "high-kp":  { freq: 0.50, amp: 1.0, kp: 1.00, tf: 27, omegaMax: 100, alphaRamp: 500, muStep: 16, iRed: 1.0, tauDet: 8, tauTx: 4, dt: 0.5, tsim: 10 },
+  "slow-ball":{ freq: 0.20, amp: 1.0, kp: 0.45, tf: 27, omegaMax: 100, alphaRamp: 500, muStep: 16, iRed: 1.0, tauDet: 8, tauTx: 4, dt: 0.5, tsim: 12 },
+  "fast-ball":{ freq: 2.00, amp: 1.0, kp: 0.45, tf: 27, omegaMax: 100, alphaRamp: 500, muStep: 16, iRed: 1.0, tauDet: 8, tauTx: 4, dt: 0.5, tsim: 6  },
+  // ── Calibration preset that reproduces the user's experimental observation
+  // (system on the verge of instability at K_p = 0.45). The model assumes
+  // an idealised stepper, so to match real-world raskachka we have to bump
+  // the loop gain. Lowering μ from 16 to 2 multiplies K_step by 8, pushing
+  // the integrator-with-delays system into the regime where K_p = 0.45
+  // already overshoots and rings. Adjust μ / i_red until the simulator
+  // ringing matches what you see on the bench.
+  "real-cal": { freq: 0.50, amp: 1.0, kp: 0.45, tf: 27, omegaMax: 100, alphaRamp: 500, muStep: 2,  iRed: 1.0, tauDet: 8, tauTx: 4, dt: 0.5, tsim: 10 },
+};
+
+function $(id) { return document.getElementById(id); }
+
+function readParams() {
+  const p = {};
+  for (const { id, kind } of PARAMS) {
+    const el = $(`${id}_n`);
+    if (kind === "select") p[id] = parseInt(el.value, 10);
+    else                   p[id] = parseFloat(el.value);
+  }
+  return p;
+}
+
+function writeParams(p) {
+  for (const { id, kind } of PARAMS) {
+    const sn = $(`${id}_n`);
+    const ss = $(`${id}_s`);
+    if (sn) sn.value = p[id];
+    if (ss) ss.value = p[id];
+  }
+}
+
+// Two-way bind range <-> number for every param (skip selects)
+function wireRangeNumber(id) {
+  const s = $(`${id}_s`);
+  const n = $(`${id}_n`);
+  if (!s || !n) return;
+  s.addEventListener("input", () => { n.value = s.value; scheduleRun(); });
+  n.addEventListener("input", () => { s.value = n.value; scheduleRun(); });
+}
+for (const { id, kind } of PARAMS) {
+  if (kind === "select") {
+    $(`${id}_n`).addEventListener("change", scheduleRun);
+  } else {
+    wireRangeNumber(id);
+  }
+}
+
+// preset buttons
+document.querySelectorAll(".preset-row button[data-preset]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const name = btn.dataset.preset;
+    const preset = PRESETS[name];
+    if (!preset) return;
+    writeParams(preset);
+    run();
+  });
+});
+
+// ─────────── circular delay buffer for "transport delay" (e^(-τs)) ───────────
+function makeDelay(delay_sec, dt_sec) {
+  const N = Math.max(1, Math.round(delay_sec / dt_sec));
+  const buf = new Float64Array(N);
+  let idx = 0;
+  return {
+    N,
+    step(x) {
+      const out = buf[idx];
+      buf[idx] = x;
+      idx = (idx + 1) % N;
+      return out;
+    }
+  };
+}
+
+// ─────────── core simulation (mirrors structural-diagram.html block-by-block) ───────────
+function simulate(p) {
+  const dt = p.dt / 1000;                // ms → s
+  const T_sim = p.tsim;                  // s
+  const N = Math.max(2, Math.round(T_sim / dt));
+
+  const w = 2 * Math.PI * p.freq;        // rad/s of the input sinusoid
+  const A_px = p.amp * L;                // amplitude in pixels
+
+  const T_f = Math.max(1e-6, p.tf / 1000); // EMA time constant in seconds (≥1µs floor)
+  const N_step_motor = STEPS_PER_REV_BASE * p.muStep;
+  const K_step = (2 * Math.PI / N_step_motor) * STEP_PER_USER;  // rad/s per user-unit
+
+  const detDelay = makeDelay(p.tauDet / 1000, dt);
+  const txDelay  = makeDelay(p.tauTx  / 1000, dt);
+
+  // states
+  let ema = 0;                 // EMA filter state (px)
+  let omega = 0;               // current motor omega after rate limiter (user/s)
+  let theta_cam = 0;           // camera mount angle (rad)
+
+  // outputs (typed arrays = fast)
+  const t_arr     = new Float64Array(N);
+  const x_ball    = new Float64Array(N);
+  const x_cam     = new Float64Array(N);
+  const eps_arr   = new Float64Array(N);
+  const omega_arr = new Float64Array(N);
+
+  for (let k = 0; k < N; k++) {
+    const t = k * dt;
+
+    // 1. Reference: ball position in a stationary-camera pixel frame
+    const x_b = A_px * Math.sin(w * t);
+
+    // 2. Camera apparent shift (how much the frame slid due to mount rotation)
+    const x_c = K_LENS * theta_cam;
+
+    // 3. Visual error in pixels
+    const eps = x_b - x_c;
+
+    // 4. Detector: pure transport delay (τ_дет)
+    const eps_det = detDelay.step(eps);
+
+    // 5. EMA filter (continuous 1st-order LP with time const T_f)
+    //    dy/dt = (x − y) / T_f
+    ema = ema + dt * (eps_det - ema) / T_f;
+
+    // 6. Serial TX: pure transport delay (τ_тх)
+    const nx = txDelay.step(ema);
+
+    // 7. Normalise pixel → unit error
+    const err = nx / L;
+
+    // 8. P-regulator
+    let omega_t = err * p.kp * p.omegaMax;
+
+    // 9. Saturation (clamp)
+    if (omega_t >  p.omegaMax) omega_t =  p.omegaMax;
+    if (omega_t < -p.omegaMax) omega_t = -p.omegaMax;
+
+    // 10. Rate limiter (Timer2 ramp): |dω/dt| ≤ α
+    const max_change = p.alphaRamp * dt;
+    if      (omega_t > omega + max_change) omega = omega + max_change;
+    else if (omega_t < omega - max_change) omega = omega - max_change;
+    else                                   omega = omega_t;
+
+    // 11. Stepper → shaft angular velocity (rad/s)
+    const theta_dot_shaft = K_step * omega;
+
+    // 12. Camera mount kinematics — integrator (1/s) with reduction
+    theta_cam += dt * theta_dot_shaft / Math.max(1e-6, p.iRed);
+
+    // record
+    t_arr[k]     = t;
+    x_ball[k]    = x_b;
+    x_cam[k]     = x_c;
+    eps_arr[k]   = eps;
+    omega_arr[k] = omega;
+  }
+
+  // ─── metrics: fit sinusoid to tail (skip first 1.5 periods to let transient die) ───
+  const period_s = 1 / p.freq;
+  const t_start_metrics = Math.min(T_sim - period_s, Math.max(period_s * 1.5, T_sim - period_s * 3));
+
+  const fit_in  = fitSine(t_arr, x_ball, w, t_start_metrics, T_sim);
+  const fit_out = fitSine(t_arr, x_cam,  w, t_start_metrics, T_sim);
+
+  // RMS / max error over the metrics window
+  let rms_err = 0, max_err = 0, count = 0;
+  for (let k = 0; k < N; k++) {
+    if (t_arr[k] < t_start_metrics) continue;
+    const e = Math.abs(eps_arr[k]);
+    rms_err += e * e;
+    if (e > max_err) max_err = e;
+    count++;
+  }
+  rms_err = Math.sqrt(rms_err / Math.max(1, count));
+
+  // K_loop (DC, open-loop static gain): err_to_omega · omega_to_θ̇ · ∫ · K_lens
+  // Since there is an integrator in the loop, the "DC gain" is actually
+  // the unity-crossover frequency for a pure integrator: ω_c ≈ K_loop_static
+  // (rad/s). It tells you bandwidth, not steady-state error (which is 0
+  // because of the integrator).
+  const K_loop_dc = p.kp * p.omegaMax * K_step * K_LENS / (L * Math.max(1e-6, p.iRed));
+
+  return {
+    t: t_arr, x_ball, x_cam, eps: eps_arr, omega: omega_arr,
+    metrics: {
+      A_in:  fit_in.A,
+      A_out: fit_out.A,
+      gain:  fit_out.A / Math.max(1e-9, fit_in.A),
+      gain_dB: 20 * Math.log10(Math.max(1e-9, fit_out.A) / Math.max(1e-9, fit_in.A)),
+      // Phase: φ_out − φ_in. Negative ⇒ out lags in.
+      // Fold into (-180°, +180°].
+      phase_deg: foldPhase(fit_out.phi - fit_in.phi),
+      rms_err, max_err,
+      K_loop_dc,
+      period_s,
+    },
+  };
+}
+
+function foldPhase(phi) {
+  while (phi >  180) phi -= 360;
+  while (phi <= -180) phi += 360;
+  return phi;
+}
+
+// Least-squares fit y(t) ≈ a·sin(ωt) + b·cos(ωt) over [t_start, t_end].
+// Returns {A, phi} where y(t) = A·sin(ωt + φ).
+function fitSine(t_arr, y_arr, w, t_start, t_end) {
+  let a = 0, b = 0, count = 0;
+  for (let i = 0; i < t_arr.length; i++) {
+    const t = t_arr[i];
+    if (t < t_start || t > t_end) continue;
+    const s = Math.sin(w * t);
+    const c = Math.cos(w * t);
+    a += y_arr[i] * s;
+    b += y_arr[i] * c;
+    count++;
+  }
+  if (count === 0) return { A: 0, phi: 0 };
+  // For dense samples the basis is approximately orthonormal with ⟨s,s⟩=⟨c,c⟩≈N/2.
+  a *= 2 / count;
+  b *= 2 / count;
+  const A   = Math.sqrt(a * a + b * b);
+  const phi = Math.atan2(b, a) * 180 / Math.PI;   // in degrees
+  return { A, phi };
+}
+
+// ─────────── Canvas plotting (no libs) ───────────
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = Math.max(1, Math.round(rect.width  * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: rect.width, h: rect.height };
+}
+
+function drawAxes(ctx, w, h, x0, x1, y0, y1, opts) {
+  const padL = 56, padR = 14, padT = 12, padB = 32;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  const sx = x => padL + (x - x0) / (x1 - x0) * plotW;
+  const sy = y => padT + (1 - (y - y0) / (y1 - y0)) * plotH;
+
+  ctx.fillStyle = "#0c0d11";
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = "#1f2128";
+  ctx.lineWidth = 1;
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.fillStyle = "#7a7f8b";
+  ctx.textBaseline = "middle";
+
+  const xTicks = opts.xTicks || 8;
+  for (let i = 0; i <= xTicks; i++) {
+    const xv = x0 + (x1 - x0) * i / xTicks;
+    const xp = sx(xv);
+    ctx.beginPath();
+    ctx.moveTo(xp, padT);
+    ctx.lineTo(xp, padT + plotH);
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.fillText(opts.fmtX ? opts.fmtX(xv) : xv.toFixed(1), xp, padT + plotH + 13);
+  }
+  const yTicks = opts.yTicks || 5;
+  for (let i = 0; i <= yTicks; i++) {
+    const yv = y0 + (y1 - y0) * i / yTicks;
+    const yp = sy(yv);
+    ctx.beginPath();
+    ctx.moveTo(padL, yp);
+    ctx.lineTo(padL + plotW, yp);
+    ctx.stroke();
+    ctx.textAlign = "right";
+    ctx.fillText(opts.fmtY ? opts.fmtY(yv) : yv.toFixed(0), padL - 6, yp);
+  }
+
+  // Frame
+  ctx.strokeStyle = "#2a2c33";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(padL, padT, plotW, plotH);
+
+  // Zero line — accentuated (only if 0 is inside y-range)
+  if (y0 < 0 && y1 > 0) {
+    const y0p = sy(0);
+    ctx.strokeStyle = "#3a3f4a";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, y0p);
+    ctx.lineTo(padL + plotW, y0p);
+    ctx.stroke();
+  }
+
+  // Axis labels
+  ctx.fillStyle = "#8d92a0";
+  ctx.textAlign = "right";
+  ctx.fillText(opts.xLabel || "", padL + plotW, padT + plotH + 26);
+  ctx.textAlign = "left";
+  ctx.fillText(opts.yLabel || "", padL, padT - 2);
+
+  return { sx, sy, plotW, plotH, padL, padT };
+}
+
+// Min/max decimation: for each "pixel column" pick min and max y-values
+// and draw a vertical segment. Preserves the visual amplitude of fast
+// signals when the data is much denser than canvas pixels.
+function drawSeriesMinMax(ctx, t_arr, y_arr, sx, sy, x0, x1) {
+  const N = t_arr.length;
+  if (N === 0) return;
+
+  // canvas pixel width of the plot area
+  const x_left  = sx(x0);
+  const x_right = sx(x1);
+  const pixW    = Math.max(1, Math.round(x_right - x_left));
+
+  // bucket each sample into a pixel column
+  const buckets = new Array(pixW);
+  for (let p = 0; p < pixW; p++) buckets[p] = null; // [min, max]
+
+  for (let i = 0; i < N; i++) {
+    const t = t_arr[i];
+    if (t < x0 || t > x1) continue;
+    const xp = (t - x0) / (x1 - x0) * pixW;
+    const col = Math.min(pixW - 1, Math.max(0, Math.floor(xp)));
+    const y = y_arr[i];
+    const b = buckets[col];
+    if (b === null) buckets[col] = [y, y];
+    else { if (y < b[0]) b[0] = y; if (y > b[1]) b[1] = y; }
+  }
+
+  ctx.beginPath();
+  let started = false;
+  for (let p = 0; p < pixW; p++) {
+    const b = buckets[p];
+    if (b === null) continue;
+    const xp = x_left + p + 0.5;
+    const y_min_p = sy(b[0]);
+    const y_max_p = sy(b[1]);
+    // draw single vertical span per column
+    if (!started) { ctx.moveTo(xp, y_min_p); started = true; }
+    else          { ctx.lineTo(xp, y_min_p); }
+    ctx.lineTo(xp, y_max_p);
+  }
+  ctx.stroke();
+}
+
+// ─────────── three plot variants (tracking, error, omega) ───────────
+function plotTracking(canvas, sim, p) {
+  const { ctx, w, h } = setupCanvas(canvas);
+  const t0 = 0, t1 = p.tsim;
+  const A_px = p.amp * L;
+  // y-range with some headroom (so peaks of x_cam don't clip even if it overshoots)
+  const ymax_data = Math.max(A_px, ...maxAbs(sim.x_cam, 64)) * 1.1;
+  const yMax = niceCeil(ymax_data);
+  const yMin = -yMax;
+
+  const ax = drawAxes(ctx, w, h, t0, t1, yMin, yMax, {
+    xLabel: "t (с)", yLabel: "px",
+    xTicks: Math.min(10, Math.round(t1 * 2) || 8),
+    yTicks: 6,
+    fmtX: v => v.toFixed(1),
+    fmtY: v => v.toFixed(0),
+  });
+
+  // Reference (yellow) — drawn first so the response (red) sits on top
+  ctx.strokeStyle = "#ffcc00"; ctx.lineWidth = 1.4;
+  drawSeriesMinMax(ctx, sim.t, sim.x_ball, ax.sx, ax.sy, t0, t1);
+
+  // Output (red)
+  ctx.strokeStyle = "#ff7b6e"; ctx.lineWidth = 1.6;
+  drawSeriesMinMax(ctx, sim.t, sim.x_cam, ax.sx, ax.sy, t0, t1);
+}
+
+function plotError(canvas, sim, p) {
+  const { ctx, w, h } = setupCanvas(canvas);
+  const t0 = 0, t1 = p.tsim;
+  const ymax_data = Math.max(...maxAbs(sim.eps, 64), 1) * 1.1;
+  const yMax = niceCeil(ymax_data);
+  const yMin = -yMax;
+
+  const ax = drawAxes(ctx, w, h, t0, t1, yMin, yMax, {
+    xLabel: "t (с)", yLabel: "ε (px)",
+    xTicks: Math.min(10, Math.round(t1 * 2) || 8),
+    yTicks: 5,
+    fmtX: v => v.toFixed(1),
+    fmtY: v => v.toFixed(0),
+  });
+
+  ctx.strokeStyle = "#4dd29a"; ctx.lineWidth = 1.4;
+  drawSeriesMinMax(ctx, sim.t, sim.eps, ax.sx, ax.sy, t0, t1);
+}
+
+function plotOmega(canvas, sim, p) {
+  const { ctx, w, h } = setupCanvas(canvas);
+  const t0 = 0, t1 = p.tsim;
+  const yMax = p.omegaMax * 1.15;
+  const yMin = -yMax;
+
+  const ax = drawAxes(ctx, w, h, t0, t1, yMin, yMax, {
+    xLabel: "t (с)", yLabel: "ω (user/c)",
+    xTicks: Math.min(10, Math.round(t1 * 2) || 8),
+    yTicks: 5,
+    fmtX: v => v.toFixed(1),
+    fmtY: v => v.toFixed(0),
+  });
+
+  // ±ω_max ceiling lines
+  ctx.strokeStyle = "#5d626d"; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(ax.sx(t0), ax.sy(p.omegaMax)); ctx.lineTo(ax.sx(t1), ax.sy(p.omegaMax));
+  ctx.moveTo(ax.sx(t0), ax.sy(-p.omegaMax)); ctx.lineTo(ax.sx(t1), ax.sy(-p.omegaMax));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = "#4d9fff"; ctx.lineWidth = 1.4;
+  drawSeriesMinMax(ctx, sim.t, sim.omega, ax.sx, ax.sy, t0, t1);
+}
+
+// helpers
+function maxAbs(arr, stride) {
+  // sample every `stride`th element, return [max abs] (skip transient first 10%)
+  const out = [];
+  let m = 0;
+  const start = Math.floor(arr.length * 0.1);
+  for (let i = start; i < arr.length; i += stride) {
+    const v = Math.abs(arr[i]);
+    if (v > m) m = v;
+  }
+  out.push(m);
+  return out;
+}
+
+function niceCeil(x) {
+  if (x === 0) return 1;
+  const exp = Math.floor(Math.log10(x));
+  const base = Math.pow(10, exp);
+  const m = x / base;
+  let nm;
+  if      (m <= 1)   nm = 1;
+  else if (m <= 1.5) nm = 1.5;
+  else if (m <= 2)   nm = 2;
+  else if (m <= 2.5) nm = 2.5;
+  else if (m <= 3)   nm = 3;
+  else if (m <= 4)   nm = 4;
+  else if (m <= 5)   nm = 5;
+  else if (m <= 7.5) nm = 7.5;
+  else               nm = 10;
+  return nm * base;
+}
+
+// ─────────── badges ───────────
+function updateBadges(p, sim) {
+  // Period
+  $("b_period_v").textContent = (1 / p.freq).toFixed(2) + " c";
+  $("b_period_s").textContent = `f = ${p.freq.toFixed(2)} Гц`;
+
+  // Σ delay
+  const sumDelayMs = p.tauDet + p.tauTx + p.tf;
+  $("b_delay_v").textContent = sumDelayMs.toFixed(0) + " мс";
+  $("b_delay_s").textContent = `${p.tauDet} + ${p.tauTx} + ${p.tf} (T_ф)`;
+  toggleBadgeColor("b_delay", sumDelayMs < 30 ? "ok" : sumDelayMs < 70 ? "" : "warn");
+
+  // K_loop (DC)
+  $("b_kloop_v").textContent = sim.metrics.K_loop_dc.toFixed(2) + " 1/c";
+  $("b_kloop_s").textContent = `пред. полоса ≈ ${(sim.metrics.K_loop_dc / (2 * Math.PI)).toFixed(2)} Гц`;
+
+  // |H(jω)|
+  const gdB = sim.metrics.gain_dB;
+  $("b_gain_v").textContent = `${gdB.toFixed(1)} дБ`;
+  $("b_gain_s").textContent = `|H| = ${(sim.metrics.gain * 100).toFixed(0)} %  ·  RMS ε = ${sim.metrics.rms_err.toFixed(0)} px`;
+  toggleBadgeColor("b_gain", gdB > -1 ? "ok" : gdB > -6 ? "" : "warn");
+
+  // phase lag — make it sign-correct: "lag" is positive when output is behind
+  // by more than 0°. Our raw phase is φ_out − φ_in (negative when out lags).
+  const lag_deg = -sim.metrics.phase_deg;     // positive = lag
+  const lag_ms  = lag_deg / 360 / p.freq * 1000;
+  $("b_phase_v").textContent = `${lag_deg.toFixed(0)}°`;
+  $("b_phase_s").textContent = `≈ ${lag_ms.toFixed(0)} мс  ·  max ε = ${sim.metrics.max_err.toFixed(0)} px`;
+  toggleBadgeColor("b_phase", Math.abs(lag_deg) < 15 ? "ok" : Math.abs(lag_deg) < 60 ? "" : "warn");
+}
+
+function toggleBadgeColor(id, kind /* "ok" | "warn" | "" */) {
+  const el = $(id);
+  el.classList.remove("ok", "warn", "bad");
+  if (kind) el.classList.add(kind);
+}
+
+/* ─────────── live FBD coefficient overlay ───────────
+ * Mirrors every dynamic coefficient on the SVG diagram with the current
+ * slider state — so the FBD reads like a live Simulink model. */
+function updateFBD(p, sim) {
+  const setText = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
+
+  // 1. Sine source
+  setText("fbd_sine_amp",  Math.round(p.amp * L).toString());
+  setText("fbd_sine_freq", p.freq.toFixed(2));
+
+  // 3-5. Pure delays + EMA time constant
+  setText("fbd_taudet", p.tauDet.toFixed(0));
+  setText("fbd_tf",     p.tf.toFixed(0));
+  setText("fbd_tautx",  p.tauTx.toFixed(0));
+
+  // 7. P-controller
+  setText("fbd_kp",     p.kp.toFixed(2));
+  setText("fbd_wmax",   p.omegaMax.toFixed(0));
+  setText("fbd_p_prod", (p.kp * p.omegaMax).toFixed(2));
+
+  // 8. Saturation
+  setText("fbd_sat_neg", p.omegaMax.toFixed(0));
+  setText("fbd_sat_pos", p.omegaMax.toFixed(0));
+
+  // 9. Rate limiter
+  setText("fbd_alpha", p.alphaRamp.toFixed(0));
+
+  // 10. Stepper gain — must mirror simulate(): K_step = (2π / N_step) · STEP_PER_USER
+  const N_step = STEPS_PER_REV_BASE * p.muStep;
+  const K_step = (2 * Math.PI / N_step) * STEP_PER_USER;
+  setText("fbd_kstep", K_step.toFixed(3));
+  setText("fbd_mu",    p.muStep.toFixed(0));
+
+  // 11. Integrator
+  setText("fbd_ired", p.iRed.toFixed(2));
+
+  // ── Bottom callouts ──
+  // K_open: same as sim.metrics.K_loop_dc (kept in sync explicitly).
+  setText("fbd_kopen", sim.metrics.K_loop_dc.toFixed(2));
+  setText("fbd_bw",    (sim.metrics.K_loop_dc / (2 * Math.PI)).toFixed(2));
+
+  // τ_eq: pure-delay equivalent of the sensing tail (rough φ_m proxy).
+  // EMA contributes ~T_f to lag at ω_c << 1/T_f, so we lump it in here.
+  const tau_eq_ms = p.tauDet + p.tauTx + p.tf;
+  setText("fbd_taueq", tau_eq_ms.toFixed(0));
+
+  // φ_m: estimate at the unity-gain crossover of pure integrator (ω_c = K_open).
+  // Plant: K_open / s · 1/(T_f·s+1) · e^(-τ_pure·s)
+  //   pure-integrator phase     = -90°
+  //   1-pole filter contribution = -atan(ω_c · T_f)
+  //   pure delay contribution    = -ω_c · τ_pure   (rad)
+  // φ_m = 180° + plant_phase_at_ωc.
+  const omega_c   = sim.metrics.K_loop_dc;     // rad/s (good approx for K_loop·1/s)
+  const T_f_s     = p.tf / 1000;
+  const tau_pure  = (p.tauDet + p.tauTx) / 1000;
+  const phase_ema   = Math.atan(omega_c * T_f_s) * 180 / Math.PI;
+  const phase_delay = omega_c * tau_pure * 180 / Math.PI;
+  const phi_m       = 90 - phase_ema - phase_delay;
+  setText("fbd_phi_m", phi_m.toFixed(0));
+}
+
+// ─────────── orchestration ───────────
+let pendingTimer = null;
+function scheduleRun() {
+  if (pendingTimer) clearTimeout(pendingTimer);
+  // Tiny debounce so dragging a slider 100 times/sec doesn't peg the CPU.
+  pendingTimer = setTimeout(run, 30);
+}
+
+function run() {
+  const p = readParams();
+
+  // Hard guard: dt should not exceed any delay, otherwise the ring buffers
+  // become 1-element pass-throughs (all delays "round to zero"). Bump dt
+  // down silently if the user picks something silly.
+  const dt_max_ms = Math.min(
+    p.tauDet > 0 ? p.tauDet : Infinity,
+    p.tauTx  > 0 ? p.tauTx  : Infinity,
+    p.tf     > 0 ? p.tf     : Infinity,
+    5
+  );
+  const dt_used = Math.min(p.dt, Math.max(0.1, dt_max_ms / 2));
+  if (dt_used !== p.dt) p.dt = dt_used;
+
+  const sim = simulate(p);
+
+  plotTracking($("plotTracking"), sim, p);
+  plotError(   $("plotError"),    sim, p);
+  plotOmega(   $("plotOmega"),    sim, p);
+  updateBadges(p, sim);
+  updateFBD(   p, sim);
+}
+
+// re-render plots on resize (dpr / canvas size changes)
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(run, 100);
+});
+
+// initial paint
+window.addEventListener("DOMContentLoaded", run);
+</script>
+
+</body>
+</html>

@@ -399,6 +399,23 @@ outer visual loop is closed via the camera. A side-by-side comparison
 table shows what would need to be added to reach a classical
 three-regulator servo-drive structure (current → speed → position).
 
+### 🎛 Closed-loop browser simulator (Simulink-lite)
+
+If you want to **try** the parameters without flashing or pointing the
+camera at anything — open
+[`docs/closed-loop-sim.html`](docs/closed-loop-sim.html). It's a numerical
+integrator of the full closed-loop response built block-by-block from
+the structural diagram: optics → detector delay → EMA → serial delay →
+P-regulator → saturation → ramp limiter → stepper → mount kinematics →
+visual feedback.
+
+Inputs: sinusoidal "ball motion" with adjustable frequency and amplitude
+(× 320 px = half-frame). Outputs: yellow reference + red response on
+the same axis, plus separate plots for tracking error ε(t) and motor
+command ω(t). Live metrics: |H(jω)|, phase lag, RMS / max error,
+loop bandwidth. Six presets including "current setup", "halved EMA",
+"high K_p (instability)" and "calibrated to your real raskachka".
+
 ---
 
 ## 🧪 Troubleshooting
