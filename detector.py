@@ -12,7 +12,7 @@ class BallDetector:
         # `hardware.send_data`. Raw pixels give ~30x finer effective
         # resolution than the previous percent (-100..100) representation.
         self.FOV_X, self.FOV_Y = 68.0, 46.0
-        self.alpha = 0.25
+        self.alpha = 0.5
         self.f_ax, self.f_ay, self.f_nx, self.f_ny = 0.0, 0.0, 0.0, 0.0
         self.last_data = (0.0, 0.0, 0.0, 0.0)
 
@@ -71,6 +71,14 @@ class BallDetector:
             # Detector centre cross — blue (BGR) so it doesn't bleed
             # into a yellow ball; the contour ring stays yellow.
             cv2.drawMarker(frame, (int(cx), int(cy)), (255, 0, 0), cv2.MARKER_CROSS, 15, 2)
+
+        # Зелёный крестик-репер в геометрическом центре кадра (cx_f, cy_f).
+        # Это «точка нуля» ошибки: красный EMA-маркер должен совпадать с ним,
+        # когда шарик идеально по центру. Рисуем ПЕРЕД красным, чтобы
+        # динамический красный был поверх и не терялся, когда они
+        # совпадают.
+        cv2.drawMarker(frame, (cx_f, cy_f), (0, 255, 0),
+                       cv2.MARKER_CROSS, 14, 1)
 
         # Red cross at the EMA-smoothed (nx, ny) — i.e. exactly the pair
         # that is shipped to the Arduino on every packet (matches the

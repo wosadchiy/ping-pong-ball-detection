@@ -43,22 +43,47 @@ def configure_opencv_env() -> None:
         os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_MSMF", "0")
 
 
-# Keywords used to recognise an Arduino-compatible USB-serial adapter.
-# Matched case-insensitively against (description + manufacturer + device).
-SERIAL_MATCH_KEYWORDS: tuple[str, ...] = (
-    # Boards / vendors
+# Keywords used to recognise USB-serial adapters of known board families.
+# Each set is matched case-insensitively against (description + manufacturer
+# + device). Matching is intentionally narrow per family so we don't accidentally
+# pick up the wrong board when several USB-serial devices are plugged in.
+#
+# The ADuC841 latency-test board uses an FTDI bridge (e.g. FT232R), which on
+# macOS shows up as `/dev/cu.usbserial-A100VKSF` etc. Older Arduino boards
+# (Nano clones with CH340) show up as `/dev/cu.wchusbserial-XXXX` or as
+# native USB modems (`usbmodem`). On the same Mac you can have both plugged
+# in at once — splitting the keyword sets ensures `find_arduino()` /
+# `find_aduc()` each return THEIR board, not the other.
+
+ARDUINO_MATCH_KEYWORDS: tuple[str, ...] = (
+    # Vendor / board names
     "arduino",
     "wch",            # CH340/CH341 manufacturer string on macOS
     "ch340",
     "ch341",
-    "ftdi",
-    "silicon labs",   # CP2102/CP2104
+    "silicon labs",   # CP2102/CP2104 (often on cheap Nano clones)
     "silabs",
-    # Device-path fragments (mostly macOS / Linux)
-    "usbmodem",       # Native USB MCUs (UNO R3 ATmega16u2, Leonardo, Nano Every, ...)
-    "usbserial",      # Generic USB-UART bridges on macOS
+    # Device-path fragments
+    "usbmodem",       # native-USB Arduinos (UNO R3, Leonardo, Nano Every)
     "wchusbserial",   # CH340 on macOS
     "slab_usbtouart", # CP210x on macOS
-    "ttyusb",         # Linux: CH340/FTDI
     "ttyacm",         # Linux: native-USB Arduinos
+    # NOTE: deliberately NO "usbserial" / "ftdi" / "ttyusb" here — those would
+    # match the ADuC841's FTDI bridge as well. If you have an FTDI-based
+    # Arduino (rare these days), use the ARDUINO_PORT env var to force it.
 )
+
+ADUC_MATCH_KEYWORDS: tuple[str, ...] = (
+    # Vendor names
+    "ftdi",
+    "future technology",  # full FTDI manufacturer string
+    # Device-path fragments specific to FTDI on macOS — the suffix after
+    # `usbserial-` is the chip's burned-in EEPROM serial. FT232R serials
+    # typically start with 'A' (e.g. A100VKSF), FT232H with 'FT'.
+    "usbserial-a",
+    "usbserial-f",
+    "usbserial-b",
+)
+
+# Backwards-compat alias — older code still imports the old name.
+SERIAL_MATCH_KEYWORDS = ARDUINO_MATCH_KEYWORDS + ADUC_MATCH_KEYWORDS

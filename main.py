@@ -6,6 +6,11 @@ from threading import Thread, Lock
 from config import ConfigStore
 from camera import VideoStream, list_available_cameras # Импорт сканера
 from hardware import ArduinoHandler
+# ADuC841 latency-mirror отключён по запросу — pipeline отлажен,
+# измеренная задержка ~24-25 мс на α=0.5 / 120 fps. Чтобы вернуть
+# зеркалирование на DAC0/DAC1 — раскомментируйте эту строку и
+# 4 связанных блока ниже (помечены "ADuC OFF").
+# from hardware import ArduinoHandler, AducHandler
 from detector import BallDetector
 from platform_utils import IS_MACOS
 from recorder import Recorder
@@ -44,6 +49,8 @@ def logic_thread_func(store, detector, arduino, vs_container, recorder):
             res_frame, res_mask, data = detector.process(frame, store)
             arduino.send_data(*data, store)
             arduino.receive_data()
+            # ADuC OFF — было: aduc.send_dx_dy(data[2], data[3])
+            # (зеркалирование nx,ny на DAC0/DAC1 для замера latency)
             t_now = time.perf_counter()
             fps_ema = ema(fps_ema, 1.0 / (t_now - prev_time), 0.1)
             prev_time = t_now
@@ -64,6 +71,8 @@ def logic_thread_func(store, detector, arduino, vs_container, recorder):
 def main():
     store = ConfigStore()
     arduino = ArduinoHandler()
+    # ADuC OFF — было: aduc = AducHandler()
+    # (FTDI-канал latency-зеркала, поднимал отдельный COM-порт)
     detector = BallDetector()
     
     # 1. СНАЧАЛА сканируем камеры (пока никто их не занял)
@@ -88,6 +97,7 @@ def main():
     recorder = Recorder()
 
     # Запуск логики
+    # ADuC OFF — раньше передавали `aduc` четвёртым аргументом.
     Thread(target=logic_thread_func, args=(store, detector, arduino, vs_container, recorder), daemon=True).start()
 
     # Trajectory plot bookkeeping. We sample `shared.nx` at PLOT_SAMPLE_HZ
@@ -198,6 +208,7 @@ def main():
         recorder.stop()
     vs_container[0].stop()
     arduino.close()
+    # ADuC OFF — было: aduc.close()
     dpg.destroy_context()
 
 if __name__ == "__main__":

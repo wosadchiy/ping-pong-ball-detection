@@ -416,6 +416,29 @@ command ω(t). Live metrics: |H(jω)|, phase lag, RMS / max error,
 loop bandwidth. Six presets including "current setup", "halved EMA",
 "high K_p (instability)" and "calibrated to your real raskachka".
 
+### 📡 ADuC841 latency-test rig (macOS / Linux native toolchain)
+
+For empirical end-to-end latency measurement (camera → OpenCV → EMA →
+serial → MCU → DAC) we drive an Analog Devices **ADuC841** board (8052
+core + on-chip 12-bit DAC + UART bootloader) and watch its DAC output
+on an oscilloscope alongside a turntable strobe.
+
+The whole flow — **compile + flash + monitor** — runs from Cursor on
+macOS without any Windows / Keil / WSD.exe:
+
+```bash
+brew install sdcc                 # one-time: 8051 compiler
+cd firmware/aduc841
+make all                          # build → build/firmware.ihx
+make flash                        # serial upload via tools/aduc_flash.py
+make monitor                      # `screen` to UART (Ctrl-A K to exit)
+```
+
+See [`firmware/aduc841/README.md`](firmware/aduc841/README.md) for
+toolchain details, bootloader-mode procedure (PSEN low + RESET) and
+the full AN-1074 protocol implementation in
+[`firmware/aduc841/tools/aduc_flash.py`](firmware/aduc841/tools/aduc_flash.py).
+
 ---
 
 ## 🧪 Troubleshooting
@@ -428,5 +451,5 @@ loop bandwidth. Six presets including "current setup", "halved EMA",
   * Windows: Device Manager → Ports (COM & LPT)
   * macOS: `ls /dev/cu.*`
   * Linux: `ls /dev/ttyACM* /dev/ttyUSB*`
-  Then check that `platform_utils.SERIAL_MATCH_KEYWORDS` matches your adapter's description / device path.
+  Then check that `platform_utils.ARDUINO_MATCH_KEYWORDS` matches your adapter's description / device path. The ADuC841 latency-test board (FTDI bridge) is matched separately by `ADUC_MATCH_KEYWORDS`, so both boards can be plugged in at the same time. To force a specific port, set the `ARDUINO_PORT` or `ADUC_PORT` env var.
 * **High FPS (>60) on macOS** — generally not achievable through AVFoundation for UVC cameras; cap at 60 FPS or use Windows.

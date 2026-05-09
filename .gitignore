@@ -4,7 +4,7 @@ __pycache__/
 .vscode/
 
 *.spec
-/build
+*build*/
 /dist
 
 # macOS uvc-util — собирается на каждой машине через `task install_uvc`
