@@ -47,16 +47,29 @@
 // Cap at max_omega=100, V_TABLE_N=200 → α_max ≈ 500 user/sec².
 // At max_omega=40 → α_max ≈ 200. Document this in README.
 //
-// SERIAL PROTOCOL (additions)
-// ===========================
-// Existing 7-field CSV packet stays unchanged for backward compat.
-// Three new line-prefixed commands handle drive-tuning state:
+// SERIAL PROTOCOL
+// ===============
+// Extended CSV (9 fields, the legacy 7-field form is still parsed):
+//
+//     angleX, angleY, normX, normY, Kp, isTracking, max_omega
+//                                                  [, dnormX, dnormY]
+//
+// `dnormX`/`dnormY` are the host-side derivative of normX/normY in
+// pixels/sec, computed in `detector.process` from EMA-smoothed values
+// using the actual `dt` between detector iterations (immune to camera
+// FPS jitter). When the optional tail fields are missing we keep the
+// previous derivative — that's how old Python clients stay supported.
+//
+// Four line-prefixed out-of-band commands handle tunable state:
 //
 //     A<float>\n      set acceleration α (user-units per sec²)
 //     M<0|1>\n        manual-omega override on/off
 //     O<float>\n      manual-omega target (user units, signed)
+//     D<float>\n      derivative time Td (sec) for the PD law:
+//                         omega_target = (err + Td * derr) * max_omega * Kp
+//                     Td=0 ⇒ pure P (legacy behaviour).
 //
-// When manual override is on the camera P-control branch is bypassed;
+// When manual override is on the camera PD branch is bypassed;
 // physical jog buttons still take precedence over both.
 
 const int stepPin = 9;          // OC1A — Timer1 hardware-toggles this
@@ -78,12 +91,42 @@ const int buttonPin2 = 7;
 const int debugPin = 8;         // PB0
 #endif
 
-// --- Camera P-control inputs (set by Python every CSV packet) ------------
+// ---- Scope-debug analog readout of the regulator command ---------------
+// 8-bit PWM on D6 (OC0A, Timer0 — shared with millis(), so we use
+// analogWrite() and DON'T touch the timer config). Output represents
+// `omega_target` AFTER clamp to [-max_omega, +max_omega], mapped:
+//
+//     omega_target = +max_omega → PWM 255  ( duty ≈ 100% )
+//     omega_target =          0 → PWM 128  ( duty ≈  50% )
+//     omega_target = -max_omega → PWM   1  ( duty ≈   0% )
+//
+// I.e. signed 8-bit value in [-127, +127] offset by 128. With a
+// simple RC low-pass (e.g. R=1k, C=10µF → fc≈16 Hz) you get an analog
+// trace you can compare on the scope against ball position / strobe.
+// Without RC the scope sees the 976 Hz square wave whose duty encodes
+// the command — average it visually.
+//
+// Set to 0 to disable and free PD6 for other use.
+#define DEBUG_OMEGA_PWM 1
+#if DEBUG_OMEGA_PWM
+const int omegaPwmPin = 6;      // PD6 — OC0A (Timer0 8-bit PWM)
+#endif
+
+// --- Camera PD-control inputs (set by Python every CSV packet) -----------
 float angleX = 0, angleY = 0;
 float normX = 0.0, normY = 0.0;
+// Frame-to-frame derivative of normX/normY (pixels/sec). Filled from the
+// optional 8th/9th CSV fields. Sticky across packets — if Python sends
+// a legacy 7-field line (or two consecutive packets land in the same
+// detector tick → dt=0), the previous derivative is still meaningful
+// for one extra control cycle. Watchdog below resets them on TX timeout.
+float dnormX = 0.0, dnormY = 0.0;
 float Kp = 1.0;
 bool isTracking = false;
 float max_omega = 40.0;
+// Td — derivative time constant (sec). Set out-of-band via "D<float>".
+// Default 0 keeps the legacy P-only behaviour for users with old Python.
+float Td = 0.0;
 const float SENSOR_HALF_WIDTH_PX = 320.0;
 const float manual_speed = 10.0;
 
@@ -161,6 +204,11 @@ void setup() {
 #if DEBUG_RX_PULSE
     pinMode(debugPin, OUTPUT);
     digitalWrite(debugPin, LOW);
+#endif
+
+#if DEBUG_OMEGA_PWM
+    pinMode(omegaPwmPin, OUTPUT);
+    analogWrite(omegaPwmPin, 128);  // start at "zero omega" duty
 #endif
 
     rebuild_vel_table();
@@ -243,6 +291,15 @@ void loop() {
     // ---- 2. STATUS ----
     bool python_active = (millis() - last_packet_time < timeout_ms);
 
+    // Watchdog reset for the derivative term: if the host has gone silent
+    // we shouldn't keep multiplying a stale derivative — when the link
+    // returns the operator could see a sudden D-kick from a 250 ms old
+    // velocity. err itself is already neutralised below by `omega_target=0`.
+    if (!python_active) {
+        dnormX = 0.0;
+        dnormY = 0.0;
+    }
+
     // ---- 3. COMPUTE TARGET OMEGA (user units) ----
     bool btnLeft  = (digitalRead(buttonPin1) == LOW);
     bool btnRight = (digitalRead(buttonPin2) == LOW);
@@ -259,9 +316,17 @@ void loop() {
         // motor (max speed, ramp limits) with the shaft disconnected.
         omega_target = manual_omega;
     } else if (python_active && isTracking) {
-        // Camera mode: normalised P-control on pixel error.
-        float err = normX / SENSOR_HALF_WIDTH_PX;
-        omega_target = err * max_omega * Kp;
+        // Camera mode: PD-control on normalised pixel error.
+        //   err   = normX / SENSOR_HALF_WIDTH_PX             [unitless ±1]
+        //   derr  = dnormX / SENSOR_HALF_WIDTH_PX            [1/sec]
+        //   Td * derr is the host-anticipated error 1*Td seconds ahead
+        //   (linear extrapolation), so (err + Td*derr) is the predicted
+        //   error → drives the motor a step earlier and reclaims the
+        //   ~25 ms pipeline lag we measured on the scope. Td=0 collapses
+        //   back to the historical P-law exactly.
+        float err  = normX  / SENSOR_HALF_WIDTH_PX;
+        float derr = dnormX / SENSOR_HALF_WIDTH_PX;
+        omega_target = (err + Td * derr) * max_omega * Kp;
     } else {
         omega_target = 0;
     }
@@ -270,6 +335,22 @@ void loop() {
     // overzealous manual_omega slider input).
     if (omega_target >  max_omega) omega_target =  max_omega;
     if (omega_target < -max_omega) omega_target = -max_omega;
+
+#if DEBUG_OMEGA_PWM
+    // Map omega_target → 8-bit PWM duty, centred at 128. We avoid the
+    // exact 0 and 256 codes (rare but possible due to FP rounding) by
+    // clamping into [1, 255] — keeps the output strictly bipolar and
+    // matches the docstring at the top of the file.
+    {
+        float k = (max_omega > 0.1f) ? (omega_target / max_omega) : 0.0f;
+        if (k >  1.0f) k =  1.0f;
+        if (k < -1.0f) k = -1.0f;
+        int pwm = 128 + (int)(k * 127.0f);
+        if (pwm < 1)   pwm = 1;
+        if (pwm > 255) pwm = 255;
+        analogWrite(omegaPwmPin, pwm);
+    }
+#endif
 
     // ---- 4. CONVERT omega → idx and publish target_v_idx atomically ----
     int16_t new_target = 0;
@@ -310,7 +391,19 @@ void parseIncomingData(String line) {
         return;
     }
 
-    // ---- otherwise: legacy 7-field CSV (camera P-control) ----
+    // ---- D<float>: derivative time Td (sec) for the PD law ----
+    if (prefix == 'D') {
+        Td = line.substring(1).toFloat();
+        if (Td < 0.0) Td = 0.0;          // negative Td would invert the D-kick
+        if (Td > 1.0) Td = 1.0;          // sanity cap; UI slider tops out at 0.5
+        return;
+    }
+
+    // ---- otherwise: 7- or 9-field CSV (camera PD-control) ----
+    // Layout (legacy → extended, all comma-separated):
+    //   angleX, angleY, normX, normY, Kp, isTracking, max_omega
+    //                                                [, dnormX, dnormY]
+    // The last two fields are optional so old Python builds keep working.
     int idx1 = line.indexOf(',');
     int idx2 = line.indexOf(',', idx1 + 1);
     int idx3 = line.indexOf(',', idx2 + 1);
@@ -326,7 +419,32 @@ void parseIncomingData(String line) {
         Kp         = line.substring(idx4 + 1, idx5).toFloat();
         isTracking = (line.substring(idx5 + 1, idx6).toInt() == 1);
 
-        float new_max_omega = line.substring(idx6 + 1).toFloat();
+        // max_omega может оказаться последним полем (legacy 7-field) или
+        // 7-м из 9-ти. Разруливаем по наличию ещё одной запятой.
+        int idx7 = line.indexOf(',', idx6 + 1);
+
+        float new_max_omega;
+        if (idx7 > 0) {
+            // Расширенный формат: max_omega ограничен idx7, потом dnx, dny.
+            new_max_omega = line.substring(idx6 + 1, idx7).toFloat();
+
+            int idx8 = line.indexOf(',', idx7 + 1);
+            if (idx8 > 0) {
+                dnormX = line.substring(idx7 + 1, idx8).toFloat();
+                dnormY = line.substring(idx8 + 1).toFloat();
+            } else {
+                // Странно: 8 запятых, но 9-го поля нет. Безопасно
+                // считаем, что dnormY ноль, dnormX берём после idx7.
+                dnormX = line.substring(idx7 + 1).toFloat();
+                dnormY = 0.0;
+            }
+        } else {
+            // Legacy 7-field: max_omega — это весь хвост, derr — нет.
+            new_max_omega = line.substring(idx6 + 1).toFloat();
+            // Не сбрасываем dnormX/dnormY — старые клиенты их вообще
+            // не шлют, так что значение и так нулевое из инициализации.
+        }
+
         if (new_max_omega > 0.1 &&
             fabs(new_max_omega - max_omega) > 0.05) {
             // Significant change → rebuild the table. We disable

@@ -112,6 +112,11 @@ class ConfigStore:
         self.camera_id = 0
         self.exposure = -5
         self.kp = 1.0
+        # Td — derivative time (sec) для PD-регулятора. Контроллер на
+        # Arduino делает: omega = (err + Td * derr) * max_omega * Kp.
+        # Td = 0 => чистый P (как было раньше, обратная совместимость).
+        # Типичный полезный диапазон 0.0..0.20 с (см. README про PD).
+        self.td = 0.0
         self.is_tracking = False
         self.max_omega = 40.0
 

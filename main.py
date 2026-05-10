@@ -63,8 +63,8 @@ def logic_thread_func(store, detector, arduino, vs_container, recorder):
                 shared.frame = res_frame
                 shared.mask = res_mask
                 shared.logic_fps = int(fps_ema)
-                # data == (ax, ay, nx, ny); we plot nx — the pixel-scale
-                # X delta that drives the motor.
+                # data == (ax, ay, nx, ny, dnx, dny); we plot nx — the
+                # pixel-scale X delta that drives the P-part of the PD law.
                 shared.nx = float(data[2])
         time.sleep(0.001)
 

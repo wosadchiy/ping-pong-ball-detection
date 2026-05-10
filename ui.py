@@ -250,6 +250,26 @@ def create_ui(store, available_cams):
             )
 
             _add_linked_value_control(
+                label="Td (derivative, sec)",
+                tag_prefix="td",
+                min_value=0.0, max_value=0.50,
+                default_value=float(store.td),
+                on_change=lambda v: setattr(store, 'td', float(v)),
+                is_float=True,
+                fmt="%.3f",
+                step=0.005,
+                step_fast=0.05,
+            )
+            with dpg.tooltip("slider_td"):
+                dpg.add_text(
+                    "Derivative time constant for the PD regulator.\n"
+                    "Arduino computes: omega = (err + Td * derr) * max_omega * Kp.\n"
+                    "Td = 0 => pure P (legacy behaviour).\n"
+                    "Useful range 0.02 .. 0.20 sec — start with 0.05 and\n"
+                    "raise gently while watching for high-frequency dither."
+                )
+
+            _add_linked_value_control(
                 label="Max Speed",
                 tag_prefix="max_omega",
                 min_value=30, max_value=100,

@@ -59,6 +59,8 @@ class ArduinoHandler:
         self._last_accel: float | None = None
         self._last_manual_active: bool | None = None
         self._last_manual_omega: float | None = None
+        # Td — derivative time. Sentinel = None forces a first-send.
+        self._last_td: float | None = None
 
         port = self.find_arduino()
         if port:
@@ -148,41 +150,50 @@ class ArduinoHandler:
             self._write_line(f"O{manual_omega:.2f}")
             self._last_manual_omega = manual_omega
 
-    def send_data(self, ax, ay, nx, ny, store):
+        # Td — derivative time (sec) for the PD regulator on Arduino.
+        # 0.0005 deadband ≈ half of slider step (0.005); меньшая
+        # детализация вряд ли вообще различима в поведении мотора.
+        td = float(getattr(store, "td", 0.0))
+        if self._last_td is None or abs(self._last_td - td) > 0.0005:
+            self._write_line(f"D{td:.4f}")
+            self._last_td = td
+
+    def send_data(self, ax, ay, nx, ny, dnx, dny, store):
         """Push a single control packet to Arduino. Field layout:
 
-            ax, ay   — degrees (FOV-based), kept for diagnostics / future use
-            nx, ny   — *pixels* in (-w/2..+w/2), what the firmware actually
-                       uses as `normX`/`normY` to drive the motor. We send
-                       them as floats with two decimals so the motor sees
-                       sub-pixel error coming from the EMA smoother.
-            kp       — proportional gain (float)
-            tracking — 0/1
-            max_omega — speed cap
+            ax, ay     — degrees (FOV-based), kept for diagnostics
+            nx, ny     — *pixels* in (-w/2..+w/2), error term for P-part
+            kp         — proportional gain (float)
+            tracking   — 0/1
+            max_omega  — speed cap (user units)
+            dnx, dny   — derivative of nx/ny in pixels/sec, computed in
+                         `detector.process` from EMA-smoothed values with
+                         the actual `dt` between detector iterations.
+                         Used by the Arduino as the D-part of a PD law:
+                             omega = (err + Td * derr) * max_omega * Kp.
 
-        NOTE: switching nx/ny from int (-100..100) to float pixels requires
-        the Arduino sketch to declare `normX/normY` as `float` and parse
-        with `toFloat()` (was `toInt()`). See README / commit message.
-
-        Drive-tuning state (acceleration, manual override toggle, manual
-        omega target) is sent OUT-OF-BAND via three separate prefixed
-        commands (A/M/O). The 7-field CSV format below is unchanged so
-        old firmware keeps working: it just won't see the new commands.
+        Backwards-compat note: the legacy 7-field CSV (without dnx, dny)
+        is a strict prefix of the new 9-field CSV. Old firmware that calls
+        `getValue(7)` will simply not see the new tail. New firmware reads
+        all 9 fields. Td itself is sent OUT-OF-BAND as `D<float>` (see
+        `_push_drive_tuning`) — same pattern as A/M/O — so changing it
+        never disrupts the steady-state CSV stream.
         """
         if not (self.enabled and self.ser and self.ser.is_open):
             return
 
         # Out-of-band drive-tuning updates first — they're cheap and only
         # fire on actual changes. Doing them BEFORE the CSV means an
-        # accel/mode change reaches the firmware in the same TX burst as
-        # the next regular packet, so the visible motor response is in
-        # sync with the slider movement.
+        # accel/Td/mode change reaches the firmware in the same TX burst
+        # as the next regular packet, so the visible motor response is
+        # in sync with the slider movement.
         self._push_drive_tuning(store)
 
         try:
             msg = (
                 f"{ax:.2f},{ay:.2f},{nx:.2f},{ny:.2f},"
-                f"{store.kp:.2f},{int(store.is_tracking)},{store.max_omega:.1f}\n"
+                f"{store.kp:.2f},{int(store.is_tracking)},{store.max_omega:.1f},"
+                f"{dnx:.2f},{dny:.2f}\n"
             )
             self.ser.write(msg.encode())
         except (serial.SerialException, OSError):
