@@ -190,9 +190,13 @@ class ArduinoHandler:
         self._push_drive_tuning(store)
 
         try:
+            # Передаем в поле Kp не коэффициент, а 64000.0 / Kp (или 0 если Kp=0)
+            kp_coeff = 0.0
+            if getattr(store, 'kp', 0.0) > 0.0:
+                kp_coeff = 64000.0 / float(store.kp)
             msg = (
                 f"{ax:.2f},{ay:.2f},{nx:.2f},{ny:.2f},"
-                f"{store.kp:.2f},{int(store.is_tracking)},{store.max_omega:.1f},"
+                f"{kp_coeff:.2f},{int(store.is_tracking)},{store.max_omega:.1f},"
                 f"{dnx:.2f},{dny:.2f}\n"
             )
             self.ser.write(msg.encode())

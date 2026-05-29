@@ -237,16 +237,36 @@ def create_ui(store, available_cams):
             dpg.add_text("Rec: idle", tag="ui_record_status",
                          color=[160, 160, 160])
 
+
+            def _on_kp_change(v):
+                store.kp = float(v)
+                # Зеркалит то, что hardware.py шлёт в Arduino полем kp_coeff
+                # (`64000 / store.kp` — см. ArduinoHandler.send_data). Это и
+                # есть числитель формулы прошивки v2: OCR1A = Kp_arduino / |err|.
+                # При Kp=0 (трекинг фактически отключён) делитель уходит в
+                # бесконечность — рисуем «—», без NaN/ZeroDivision.
+                coeff = "inf" if v <= 0 else f"{64000.0 / v:.1f}"
+                dpg.set_value("kp_coeff_label", f"Arduino Kp (64000/Kp): {coeff}")
+
             _add_linked_value_control(
                 label="Kp Factor",
                 tag_prefix="kp",
-                min_value=0.0, max_value=5.0,
+                min_value=0.0, max_value=2.0,
                 default_value=float(store.kp),
-                on_change=lambda v: setattr(store, 'kp', float(v)),
+                on_change=_on_kp_change,
                 is_float=True,
                 fmt="%.3f",
                 step=0.05,
                 step_fast=0.5,
+            )
+            # Отдельной строкой под слайдером — не теснит layout слайдера,
+            # значение обновляется живым callback'ом выше.
+            _init_kp = float(store.kp)
+            _init_coeff = "inf" if _init_kp <= 0 else f"{64000.0 / _init_kp:.1f}"
+            dpg.add_text(
+                f"Arduino Kp (64000/Kp): {_init_coeff}",
+                tag="kp_coeff_label",
+                color=[180, 180, 255],
             )
 
             _add_linked_value_control(

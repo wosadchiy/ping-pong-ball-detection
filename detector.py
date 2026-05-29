@@ -61,6 +61,28 @@ class BallDetector:
         self._prev_dy_raw: float | None = None
         self._prev_t: float | None = None
 
+        # ---- Loss-of-lock handling --------------------------------------
+        # Без этого пара пропущенных кадров (motion blur / край HSV-маски /
+        # блик от шарика) превращалась в лимит-цикл: detector держал
+        # последний `f_nx` ≈ ±100 px, Python спамил Arduino этим значением,
+        # watchdog прошивки (250 мс) не срабатывал — мотор крутился на
+        # максимуме «вслепую». Камера уезжала, шарик появлялся уже на
+        # другой стороне кадра → знак ошибки flip → мотор резко в обратку.
+        # В v2 прошивки (без рампы) такой реверс особенно злой.
+        #
+        # Решение — двухстадийное затухание ПО ВРЕМЕНИ:
+        #   * GRACE_SEC: продолжаем с последним f_nx как есть (короткие
+        #     мерцания шарика не должны мешать P-петле).
+        #   * Дальше за FADE_SEC линейно тянем f_nx, f_ny к нулю.
+        #   * После GRACE+FADE значения = 0 → Arduino видит err=0 → мотор
+        #     стопится естественным образом (как при isTracking=0).
+        # Подход time-based, а не frame-counter, чтобы не зависеть от
+        # того, что logic-thread вызывает process() ~1000 Гц при камере
+        # 120 Гц — иначе декремент был бы х8 быстрее ожидаемого.
+        self._lost_grace_sec = 0.05   # 50 ms — типичная длительность blur'а
+        self._lost_fade_sec  = 0.20   # ещё 200 ms линейного fade до нуля
+        self._last_success_t: float | None = None
+
         # last_data layout: (ax, ay, nx, ny, dnx, dny). Width-6 tuple is
         # consumed by `arduino.send_data(*data, store)` in main.py.
         self.last_data = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -158,6 +180,10 @@ class BallDetector:
                     self._prev_dy_raw = dy
                     self._prev_t = now
 
+            # Каждый успешный детект — это «свежий замок». Время нужно
+            # для time-based fade в else-ветке (см. __init__).
+            self._last_success_t = time.perf_counter()
+
             self.last_data = (
                 self.f_ax, self.f_ay,
                 self.f_nx, self.f_ny,
@@ -169,18 +195,32 @@ class BallDetector:
             # into a yellow ball; the contour ring stays yellow.
             cv2.drawMarker(frame, (int(cx), int(cy)), (255, 0, 0), cv2.MARKER_CROSS, 15, 2)
         else:
-            # Tracking gap — кадр без шарика. Сбрасываем D в ноль и
-            # «забываем» предыдущую позицию, чтобы при возврате шарика
-            # производная не выскочила огромной (за секунды отсутствия
-            # шарик мог появиться где угодно — фактическая «производная»
-            # бессмысленна). EMA-сглаженные nx/ny оставляем как были,
-            # чтобы Arduino продолжал держать последнюю команду до
-            # тайм-аута 250 мс (см. `cameraControl.ino`).
+            # Tracking gap. Сбрасываем D (производная по отсутствующему
+            # сигналу бессмысленна) и применяем time-based fade к nx/ny:
+            #   t < GRACE       → значения как были (моргнул шарик — ОК)
+            #   GRACE..GRACE+FADE → линейно гасим к нулю
+            #   t > GRACE+FADE  → 0 → Arduino видит err=0 → мотор замолкает
             self.dnx = 0.0
             self.dny = 0.0
             self._prev_dx_raw = None
             self._prev_dy_raw = None
             self._prev_t = None
+
+            if self._last_success_t is not None:
+                elapsed = time.perf_counter() - self._last_success_t
+                if elapsed <= self._lost_grace_sec:
+                    fade = 1.0
+                elif elapsed >= self._lost_grace_sec + self._lost_fade_sec:
+                    fade = 0.0
+                else:
+                    fade = 1.0 - (
+                        (elapsed - self._lost_grace_sec) / self._lost_fade_sec
+                    )
+                self.f_ax *= fade
+                self.f_ay *= fade
+                self.f_nx *= fade
+                self.f_ny *= fade
+
             self.last_data = (
                 self.f_ax, self.f_ay,
                 self.f_nx, self.f_ny,
