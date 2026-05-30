@@ -3,9 +3,24 @@ import time
 import cv2
 import numpy as np
 import math
+from platform_utils import IS_RPI
 from utils import ema
 
 class BallDetector:
+    # Размеры ядер свёртки (blur и morphology). На x86/macOS оригинальные
+    # 11×11 GaussianBlur и 7×7 morphology — это ~5 ms суммарно, не больно.
+    # На Pi 4 (Cortex-A72 @ 1.8 GHz) то же самое — ~25 ms, и детектор сразу
+    # становится bottleneck'ом. Меньшие ядра дают почти ту же эффективность
+    # фильтра шума HSV-маски (~1-2 px размытие достаточно для подавления
+    # одиночных битых пикселей), но в разы быстрее.
+    #
+    # Эмпирические значения:
+    #   x86/macOS: 11 / 7 → ~5 ms detector total
+    #   Pi 4:       5 / 3 → ~7-9 ms detector total
+    # Если шумит — поднять, если тормозит — уменьшать дальше.
+    BLUR_KSIZE = 5 if IS_RPI else 11
+    MORPH_KSIZE = 3 if IS_RPI else 7
+
     def __init__(self):
         # Camera FOV is kept here for `f_ax`/`f_ay` (degree-based diagnostics
         # that are still emitted in slots 0,1 of the serial frame for any
@@ -91,7 +106,8 @@ class BallDetector:
         h, w = frame.shape[:2]
         cx_f, cy_f = w // 2, h // 2
         
-        blurred = cv2.GaussianBlur(frame, (11, 11), 0)
+        bk = self.BLUR_KSIZE
+        blurred = cv2.GaussianBlur(frame, (bk, bk), 0)
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
         
         # Используем uint8 для максимальной производительности OpenCV
@@ -99,7 +115,8 @@ class BallDetector:
         upper = np.array([store.h_max, 255, 255], dtype=np.uint8)
         
         mask = cv2.inRange(hsv, lower, upper)
-        kernel = np.ones((7,7), np.uint8)
+        mk = self.MORPH_KSIZE
+        kernel = np.ones((mk, mk), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         

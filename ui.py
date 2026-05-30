@@ -1,3 +1,4 @@
+import cv2
 import dearpygui.dearpygui as dpg
 import numpy as np
 
@@ -85,7 +86,27 @@ def _add_linked_value_control(
         add_input(**input_kwargs)
 
 
-def create_ui(store, available_cams):
+def create_ui(
+    store,
+    available_cams,
+    capture_w: int = 640,
+    capture_h: int = 480,
+    ui_w: int | None = None,
+    ui_h: int | None = None,
+):
+    """Build the DPG dashboard.
+
+    `capture_w/h` is what the detector sees; `ui_w/h` is the size of the
+    on-screen camera texture. Decoupling them is critical on slow hosts
+    (Pi 4): if we made the texture 640x480 the float32-RGBA copy + GL
+    upload in `update_texture` ate ~80 ms on every render frame and
+    starved the logic thread of GIL. Halving the UI texture cuts that
+    work 4x and keeps logic at full camera FPS.
+    """
+    if ui_w is None:
+        ui_w = capture_w
+    if ui_h is None:
+        ui_h = capture_h
     dpg.create_context()
 
     # Словарь пресетов (h_min, h_max, s_min, v_min)
@@ -117,13 +138,13 @@ def create_ui(store, available_cams):
     # Реестр текстур для вывода видео
     with dpg.texture_registry(show=False):
         dpg.add_dynamic_texture(
-            width=640, height=480, 
-            default_value=np.zeros((480, 640, 4), dtype=np.float32), 
+            width=ui_w, height=ui_h,
+            default_value=np.zeros((ui_h, ui_w, 4), dtype=np.float32),
             tag="camera_texture"
         )
         dpg.add_dynamic_texture(
-            width=640, height=480, 
-            default_value=np.zeros((480, 640, 4), dtype=np.float32), 
+            width=ui_w, height=ui_h,
+            default_value=np.zeros((ui_h, ui_w, 4), dtype=np.float32),
             tag="mask_texture"
         )
 
@@ -404,7 +425,9 @@ def create_ui(store, available_cams):
             dpg.add_plot_legend()
             dpg.add_plot_axis(dpg.mvXAxis, label="t, s", tag="plot_x_axis")
             dpg.add_plot_axis(dpg.mvYAxis, label="X delta, px", tag="plot_y_axis")
-            dpg.set_axis_limits("plot_y_axis", -340, 340)
+            # ±(width/2 + ~6% margin). Auto-scales with --low-res.
+            _y_lim = (capture_w // 2) + max(10, capture_w // 32)
+            dpg.set_axis_limits("plot_y_axis", -_y_lim, _y_lim)
             dpg.add_line_series(
                 [], [],
                 label="nx (px)",
@@ -425,6 +448,14 @@ def create_ui(store, available_cams):
 INV_255 = np.float32(1.0 / 255.0)
 
 def update_texture(tag, frame):
-    """Преобразование BGR/Gray кадра в текстуру float32 для Dear PyGui"""
-    data = (frame.astype(np.float32) * INV_255).flatten()
+    """Push a small RGBA uint8 frame into a dynamic_texture as float32.
+
+    Caller is expected to have already RESIZED frame to texture dimensions
+    AND converted it to RGBA. Doing both there (in the main render thread)
+    instead of inside this helper means we operate on small ndarrays:
+    320x240 RGBA = 0.3 MB instead of 640x480 = 1.2 MB. The float32 alloc
+    that DPG demands then copies 1.2 MB instead of 4.9 MB — and that's the
+    delta that lets the logic thread keep its GIL share on Pi 4.
+    """
+    data = frame.astype(np.float32) * INV_255
     dpg.set_value(tag, data)

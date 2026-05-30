@@ -4,6 +4,13 @@
 # `task <name>` works identically on Windows, macOS and Linux.
 # ---------------------------------------------------------------------------
 dev               = "python main.py"
+dev_no_arduino    = "python main.py --no-arduino"
+dev_pi            = "python main.py --no-arduino --low-res"
+dev_pi_smooth     = "python main.py --no-arduino --ui-fps 30 --texture-fps 24"
+headless          = "python main.py --headless"
+headless_no_arduino = "python main.py --headless --no-arduino"
+bench             = "python -m tools.bench"
+bench_low         = "python -m tools.bench --low-res"
 install           = "python tasks.py install"
 install_uvc       = "python tasks.py install_uvc"
 clean             = "python tasks.py clean"

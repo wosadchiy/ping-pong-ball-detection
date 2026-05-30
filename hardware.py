@@ -46,7 +46,7 @@ def _find_serial_port(
 
 
 class ArduinoHandler:
-    def __init__(self, baudrate=115200):
+    def __init__(self, baudrate=115200, disabled: bool = False):
         self.ser = None
         self.enabled = False
 
@@ -61,6 +61,13 @@ class ArduinoHandler:
         self._last_manual_omega: float | None = None
         # Td — derivative time. Sentinel = None forces a first-send.
         self._last_td: float | None = None
+
+        # Явный dev-режим: пропускаем поиск порта и остаёмся выключенными.
+        # Все send/receive уже защищены гейтом self.enabled, так что
+        # остальной pipeline (camera/detector/recorder/UI) работает как есть.
+        if disabled:
+            print("Arduino disabled via --no-arduino. Running in dev mode (no serial I/O).")
+            return
 
         port = self.find_arduino()
         if port:
