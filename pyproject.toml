@@ -19,6 +19,31 @@ buildDev          = "python tasks.py build --debug"
 buildProd         = "python tasks.py build"
 
 # ---------------------------------------------------------------------------
+# STM32 Nucleo-F103RB firmware (PlatformIO under firmware/stm32_nucleo_f103rb).
+# Requires `pip install platformio` once. First `fw_build` will pull ~150 MB
+# of stm32 toolchain (cached after that). Flashing assumes the Nucleo board's
+# on-board ST-Link/V2-1 is plugged into a USB port — works equally on Pi or
+# laptop.
+# ---------------------------------------------------------------------------
+fw_build          = "pio run -d firmware/stm32_nucleo_f103rb"
+fw_flash          = "pio run -d firmware/stm32_nucleo_f103rb -t upload"
+fw_clean          = "pio run -d firmware/stm32_nucleo_f103rb -t clean"
+fw_serial         = "pio device monitor -d firmware/stm32_nucleo_f103rb"
+# Probe target state via SWD: halts the MCU, prints PC + SP + RCC_CSR,
+# resumes for 500 ms, halts again to see if PC moved (== code is running),
+# then issues a clean `reset run` so the firmware actually starts. Use when
+# `task fw_flash` succeeds but the board behaves dead (LED stuck on/off).
+fw_diag           = "python tasks.py fw_diag"
+# Issue a clean external NRST + run via openocd. Use when openocd left the
+# target in halt-state after a botched reset (LD2 dim, no firmware running).
+fw_reset          = "python tasks.py fw_reset"
+# SPI master test: stream a manual-drive command (manual_active + omega) from
+# the Pi to the STM32 SPI slave. Requires SPI enabled on the Pi (raspi-config)
+# and the CN10 wiring from the firmware/tool docstrings. Pass extra args after
+# `--`, e.g. `task fw_spi_test -- --sweep` or `task fw_spi_test -- --mode 0`.
+fw_spi_test       = "python firmware/stm32_nucleo_f103rb/tools/spi_test.py"
+
+# ---------------------------------------------------------------------------
 # Platform-specific shell variants (kept for transparency / debugging).
 # Use them only if you really want raw cmd.exe / bash invocations.
 # ---------------------------------------------------------------------------

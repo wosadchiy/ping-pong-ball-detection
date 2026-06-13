@@ -2,6 +2,12 @@ opencv-python>=4.8
 numpy>=1.24
 pyserial>=3.5
 
+# SPI master link Pi 4 → STM32 Nucleo (firmware/.../tools/spi_test.py and the
+# future Stm32SpiHandler). Linux-only: spidev wraps the kernel /dev/spidevX.Y
+# ioctl interface, which doesn't exist on Windows/macOS. The marker keeps
+# `pip install -r` working on dev laptops (it just won't install spidev there).
+spidev>=3.6 ; sys_platform == "linux"
+
 # DearPyGui versioning is OS-specific:
 #   * 1.x is the last branch that boots reliably on macOS (Apple Silicon).
 #     The 2.x viewport closes immediately after `create_viewport()` on Sonoma+

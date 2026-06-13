@@ -297,6 +297,119 @@ def cmd_install() -> int:
     return 0
 
 
+def _find_pio_openocd() -> tuple[Path, Path] | None:
+    """Locate the openocd binary + its scripts dir that PlatformIO downloaded.
+
+    PlatformIO drops the toolchain in `~/.platformio/packages/tool-openocd/`
+    on Linux/macOS and `%USERPROFILE%\\.platformio\\packages\\tool-openocd`
+    on Windows. We don't shell out to `pio` because it adds ~3 s of startup
+    just to print a path.
+    """
+    pio_home = Path.home() / ".platformio" / "packages" / "tool-openocd"
+    if not pio_home.is_dir():
+        return None
+    bin_name = "openocd.exe" if IS_WINDOWS else "openocd"
+    candidates = [
+        pio_home / "bin" / bin_name,
+        pio_home / bin_name,
+    ]
+    binary = next((c for c in candidates if c.is_file()), None)
+    if binary is None:
+        return None
+    scripts = pio_home / "openocd" / "scripts"
+    if not scripts.is_dir():
+        scripts = pio_home / "scripts"
+    if not scripts.is_dir():
+        return None
+    return binary, scripts
+
+
+def _openocd_cmds(extra_cmds: list[str]) -> list[str] | None:
+    """Build an openocd argv targeting the on-board ST-Link/V2-1.
+
+    Mirrors the upload settings in `firmware/stm32_nucleo_f103rb/platformio.ini`
+    (hla_swd transport, srst-only reset under assert) so we never confuse the
+    MCU about how the probe drives reset. Returns None if openocd isn't on
+    disk yet — caller should print a hint to run `task fw_build` first.
+    """
+    found = _find_pio_openocd()
+    if found is None:
+        return None
+    binary, scripts = found
+    argv: list[str] = [
+        str(binary),
+        "-s", str(scripts),
+        "-f", "interface/stlink.cfg",
+        "-c", "transport select hla_swd",
+        "-c", "reset_config srst_only srst_nogate connect_assert_srst",
+        "-f", "target/stm32f1x.cfg",
+    ]
+    for c in extra_cmds:
+        argv += ["-c", c]
+    return argv
+
+
+def cmd_fw_diag() -> int:
+    """Probe the MCU via SWD: dump PC/SP, resume, and check if PC moved.
+
+    Nothing about this writes to flash. Useful when the LED is stuck
+    on/off after a flash — tells you whether the core is actually running
+    the freshly written firmware or stuck in halt / HardFault.
+    """
+    argv = _openocd_cmds([
+        "init",
+        "halt",
+        "echo {== first halt ==}",
+        # General-purpose registers + the relevant clock-control + reset-cause
+        # registers. RCC_CSR (0x40021024) low-byte tells us *why* the MCU
+        # last reset (POR / NRST / WDG / SOFT). Bit 25 (LPWRRSTF), bit 24
+        # (WWDGRSTF), bit 23 (IWDGRSTF), bit 22 (SFTRSTF), bit 21 (PORRSTF),
+        # bit 20 (PINRSTF). Bit 25:24 set => crashed via watchdog.
+        "reg pc",
+        "reg sp",
+        "reg lr",
+        "echo {-- RCC_CSR (0x40021024), bit26=LPWRRSTF .. bit20=PINRSTF --}",
+        "mdw 0x40021024 1",
+        "echo {-- RCC_CR    (0x40021000), bit25=PLLRDY bit17=HSERDY bit1=HSIRDY --}",
+        "mdw 0x40021000 1",
+        "echo {-- RCC_CFGR  (0x40021004), bit3:2=SWS (00=HSI,01=HSE,10=PLL) --}",
+        "mdw 0x40021004 1",
+        "resume",
+        "sleep 500",
+        "halt",
+        "echo {== second halt (500 ms after resume) ==}",
+        "echo {== if PC differs => firmware is running. If identical => stuck. ==}",
+        "reg pc",
+        "reg sp",
+        "reg lr",
+        "exit",
+    ])
+    if argv is None:
+        _info("openocd not found. Run `task fw_build` first to fetch the toolchain.")
+        return 1
+    _info("Running openocd diagnostic ...")
+    return subprocess.run(argv, cwd=ROOT).returncode
+
+
+def cmd_fw_reset() -> int:
+    """Issue a clean external NRST + run via openocd, no flashing.
+
+    Use when `task fw_flash` printed `Error 1` after `** Verified OK **`
+    and left the MCU halted, or when you want to restart the existing
+    firmware without unplugging the USB cable.
+    """
+    argv = _openocd_cmds([
+        "init",
+        "reset run",
+        "exit",
+    ])
+    if argv is None:
+        _info("openocd not found. Run `task fw_build` first to fetch the toolchain.")
+        return 1
+    _info("Issuing reset run via openocd ...")
+    return subprocess.run(argv, cwd=ROOT).returncode
+
+
 def cmd_install_uvc() -> int:
     """macOS-only: clone & compile the `uvc-util` helper into vendor/.
 
@@ -366,6 +479,8 @@ def main() -> int:
     )
     sub.add_parser("install", help="pip install -r requirements.txt (+uvc on macOS)")
     sub.add_parser("install_uvc", help="build vendor/uvc-util (macOS only)")
+    sub.add_parser("fw_diag", help="probe target STM32 via SWD (read-only)")
+    sub.add_parser("fw_reset", help="reset target STM32 via SWD (no flashing)")
 
     p_build = sub.add_parser("build", help="bundle the app via PyInstaller")
     p_build.add_argument(
@@ -385,6 +500,10 @@ def main() -> int:
         return cmd_install()
     if args.cmd == "install_uvc":
         return cmd_install_uvc()
+    if args.cmd == "fw_diag":
+        return cmd_fw_diag()
+    if args.cmd == "fw_reset":
+        return cmd_fw_reset()
     parser.error(f"unknown command: {args.cmd}")
     return 2
 
