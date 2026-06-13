@@ -1,18 +1,31 @@
 /**
- * STM32 Nucleo-F103RB — SPI slave test (Step 3.0 of Arduino → STM32 migration).
+ * STM32 Nucleo-F103RB — SPI drive controller (Step 3.1 of Arduino migration).
  *
  * What this sketch does
  * ---------------------
  *  • Acts as an SPI **slave** on SPI2 (Pi 4 is the master via /dev/spidev0.0).
- *  • Receives a fixed 6-byte framed packet carrying the *manual drive*
- *    command that used to come over UART as `M<0/1>` + `O<float>`:
- *        [0]=0xAA  [1]=0x55  [2]=flags  [3]=omega_lo  [4]=omega_hi  [5]=xor
- *    flags bit0 = manual_active; omega = int16 LE (user units, signed).
- *  • Prints every decoded packet (rate-limited) over the USART2 VCP so you
- *    can literally see the bytes the Pi sent — `task fw_serial`.
- *  • Drives the stepper from the manual command: spin direction = sign(omega),
- *    step rate ∝ |omega|. This is the same "manual jog" behaviour as the old
- *    button test, but the command now arrives over SPI from the Pi.
+ *  • Receives a fixed 16-byte framed packet carrying everything the motor
+ *    control loop needs (the same inputs the old Arduino sketch consumed
+ *    over UART, now binary over SPI):
+ *        [0]  0xAA      preamble
+ *        [1]  0x55      preamble
+ *        [2]  flags     bit0 = manual_active, bit1 = tracking
+ *        [3..4]   manual_omega  int16 LE  (user units, signed)
+ *        [5..6]   err_n         int16 LE  (normalised error  ×10000, ±1.0)
+ *        [7..8]   derr_n        int16 LE  (normalised d/dt    ×1000, per sec)
+ *        [9..10]  kp_x100       int16 LE  (Kp × 100)
+ *        [11..12] max_omega     int16 LE  (speed cap, user units)
+ *        [13..14] td_x1000      int16 LE  (derivative time Td × 1000, sec)
+ *        [15] xor   XOR of bytes [0..14]
+ *  • Runs the control law ON THE MCU (like the Arduino did) — Python only
+ *    supplies normalised camera inputs + tuning knobs:
+ *        manual_active → omega = manual_omega
+ *        tracking      → drive = clamp((err_n + Td·derr_n)·Kp, ±1)
+ *                        omega = drive · max_omega        (PD on camera error)
+ *        otherwise     → omega = 0 (coils released)
+ *  • Prints the decoded command + packet stats over the USART2 VCP — see
+ *    `task fw_serial`.
+ *  • Drives the stepper: spin direction = sign(omega), step rate ∝ |omega|.
  *
  * Why SPI2 (not SPI1)
  * -------------------
@@ -73,17 +86,30 @@ constexpr uint32_t STEP_HZ_MAX      = 6000;
 constexpr uint32_t HEARTBEAT_MS = 250;
 
 // ──────────────────────────────────────────────────────────────────────────
-// SPI framing protocol (must match firmware/.../tools/spi_test.py).
+// SPI framing protocol (must match firmware/.../tools/spi_test.py and the
+// Stm32SpiHandler in hardware.py). 16-byte fixed frame, MSB-first, SPI mode 0.
 // ──────────────────────────────────────────────────────────────────────────
 constexpr uint8_t SPI_SYNC0   = 0xAA;
 constexpr uint8_t SPI_SYNC1   = 0x55;
-constexpr uint8_t SPI_PKT_LEN = 6;     // sync0, sync1, flags, omega_lo, omega_hi, xor
+constexpr uint8_t SPI_PKT_LEN = 16;
 
-// Shared state written by the SPI ISR, read by loop(). `volatile` + a short
-// critical section (noInterrupts/interrupts) in loop() is enough: the fields
-// are tiny and the ISR is the only writer.
+// Fixed-point scales agreed with the Pi side. Keep in sync with hardware.py.
+constexpr float ERR_N_SCALE  = 10000.0f;   // err_n   int16  → [-1.0, +1.0]
+constexpr float DERR_N_SCALE = 1000.0f;    // derr_n  int16  → per-second
+constexpr float KP_SCALE     = 100.0f;     // kp_x100 int16  → Kp
+constexpr float TD_SCALE     = 1000.0f;    // td_x1000 int16 → Td seconds
+
+// Decoded command — written by the SPI ISR, read by loop(). `volatile` + a
+// short critical section (noInterrupts/interrupts) in loop() is enough: the
+// fields are tiny and the ISR is the only writer.
 static volatile bool     g_manualActive = false;
+static volatile bool     g_tracking     = false;
 static volatile int16_t  g_manualOmega  = 0;
+static volatile int16_t  g_errN         = 0;
+static volatile int16_t  g_derrN        = 0;
+static volatile int16_t  g_kpX100       = 0;
+static volatile int16_t  g_maxOmega     = 0;
+static volatile int16_t  g_tdX1000      = 0;
 static volatile uint32_t g_goodPackets  = 0;
 static volatile uint32_t g_badPackets   = 0;
 
@@ -95,6 +121,10 @@ static SPI_HandleTypeDef hspi2;
 // Hunts for the 0xAA 0x55 preamble, collects the body, verifies the XOR
 // checksum, and on success publishes {manualActive, manualOmega}.
 // ──────────────────────────────────────────────────────────────────────────
+static inline int16_t le16(const uint8_t* p) {
+    return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
 static inline void spiFeedByte(uint8_t b) {
     static uint8_t state = 0;
     static uint8_t buf[SPI_PKT_LEN];
@@ -108,14 +138,21 @@ static inline void spiFeedByte(uint8_t b) {
             else if (b == SPI_SYNC0) { state = 1; }   // 0xAA 0xAA … keep hunting
             else                     { state = 0; }
             break;
-        default:                                 // collecting body bytes 2..5
+        default:                                 // collecting body bytes 2..15
             buf[state] = b;
             if (++state >= SPI_PKT_LEN) {
                 state = 0;
-                const uint8_t cs = buf[0] ^ buf[1] ^ buf[2] ^ buf[3] ^ buf[4];
-                if (cs == buf[5]) {
+                uint8_t cs = 0;
+                for (uint8_t i = 0; i < SPI_PKT_LEN - 1; ++i) cs ^= buf[i];
+                if (cs == buf[SPI_PKT_LEN - 1]) {
                     g_manualActive = (buf[2] & 0x01) != 0;
-                    g_manualOmega  = (int16_t)((uint16_t)buf[3] | ((uint16_t)buf[4] << 8));
+                    g_tracking     = (buf[2] & 0x02) != 0;
+                    g_manualOmega  = le16(&buf[3]);
+                    g_errN         = le16(&buf[5]);
+                    g_derrN        = le16(&buf[7]);
+                    g_kpX100       = le16(&buf[9]);
+                    g_maxOmega     = le16(&buf[11]);
+                    g_tdX1000      = le16(&buf[13]);
                     g_goodPackets++;
                 } else {
                     g_badPackets++;
@@ -211,9 +248,9 @@ void setup() {
 
     Serial.begin(115200);
     Serial.println();
-    Serial.println(F("[nucleo-f103rb] SPI slave manual-drive test (Step 3.0)"));
+    Serial.println(F("[nucleo-f103rb] SPI drive controller (Step 3.1)"));
     Serial.println(F("  SPI2 slave: MOSI=PB15 MISO=PB14 SCK=PB13 NSS=PB12 (CN10)"));
-    Serial.println(F("  waiting for 6-byte packets from the Pi (spidev0.0) ..."));
+    Serial.println(F("  waiting for 16-byte packets from the Pi (spidev0.0) ..."));
 
     spiSlaveBegin();
 }
@@ -233,7 +270,7 @@ static void runStepper(bool active, int16_t omega) {
     }
 
     // Direction from sign; flip this ternary if the motor jogs the wrong way.
-    digitalWrite(dirPin, omega > 0 ? HIGH : LOW);
+    digitalWrite(dirPin, omega > 0 ? LOW : HIGH);
     digitalWrite(enPin, LOW);               // engage coils
     digitalWrite(LED_BUILTIN, HIGH);        // "driving" indicator
 
@@ -251,12 +288,49 @@ static void runStepper(bool active, int16_t omega) {
     }
 }
 
+// Compute the effective omega target from the latest decoded packet, mirroring
+// the legacy Arduino priority: manual override first, then camera tracking,
+// otherwise rest. The PD law matches camera_control_v2.ino's intent:
+//     drive = clamp((err + Td·derr) · Kp, ±1);  omega = drive · max_omega
+// `err`/`derr` arrive already normalised to ±1 (per second), so the law is
+// resolution-independent — the Pi did the pixel→fraction conversion.
+static int16_t computeOmega(bool manualActive, bool tracking, int16_t manualOmega,
+                            int16_t errN, int16_t derrN, int16_t kpX100,
+                            int16_t maxOmega, int16_t tdX1000) {
+    if (manualActive) {
+        return manualOmega;
+    }
+    if (!tracking) {
+        return 0;
+    }
+    const float err  = (float)errN  / ERR_N_SCALE;
+    const float derr = (float)derrN / DERR_N_SCALE;
+    const float kp   = (float)kpX100 / KP_SCALE;
+    const float td   = (float)tdX1000 / TD_SCALE;
+
+    float drive = (err + td * derr) * kp;
+    if (drive >  1.0f) drive =  1.0f;
+    if (drive < -1.0f) drive = -1.0f;
+
+    return (int16_t)lroundf(drive * (float)maxOmega);
+}
+
 void loop() {
     // Snapshot the ISR-owned command atomically.
     noInterrupts();
-    const bool    active = g_manualActive;
-    const int16_t omega  = g_manualOmega;
+    const bool    manualActive = g_manualActive;
+    const bool    tracking     = g_tracking;
+    const int16_t manualOmega  = g_manualOmega;
+    const int16_t errN         = g_errN;
+    const int16_t derrN        = g_derrN;
+    const int16_t kpX100       = g_kpX100;
+    const int16_t maxOmega     = g_maxOmega;
+    const int16_t tdX1000      = g_tdX1000;
     interrupts();
+
+    const int16_t omega  = computeOmega(manualActive, tracking, manualOmega,
+                                        errN, derrN, kpX100, maxOmega, tdX1000);
+    const bool    active = (manualActive || tracking) && (omega != 0);
 
     runStepper(active, omega);
 
@@ -264,19 +338,19 @@ void loop() {
     // the SPI bytes arriving and confirm checksum health.
     static uint32_t lastBeat = 0;
     static int16_t  lastShownOmega = 0x7FFF;
-    static bool     lastShownActive = false;
     const uint32_t now = millis();
-    const bool changed = (active != lastShownActive) || (omega != lastShownOmega);
+    const bool changed = (omega != lastShownOmega);
     if (changed || (now - lastBeat >= HEARTBEAT_MS)) {
         lastBeat = now;
-        lastShownActive = active;
-        lastShownOmega  = omega;
+        lastShownOmega = omega;
         noInterrupts();
         const uint32_t good = g_goodPackets;
         const uint32_t bad  = g_badPackets;
         interrupts();
-        Serial.print(F("[spi] active="));
-        Serial.print(active ? 1 : 0);
+        Serial.print(F("[spi] man="));
+        Serial.print(manualActive ? 1 : 0);
+        Serial.print(F(" trk="));
+        Serial.print(tracking ? 1 : 0);
         Serial.print(F(" omega="));
         Serial.print(omega);
         Serial.print(F("  good="));

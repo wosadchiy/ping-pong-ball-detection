@@ -3,19 +3,25 @@
 spi_test.py — проверка канала Pi 4 (SPI master) → STM32 Nucleo (SPI slave)
 ==========================================================================
 
-Шлёт STM32 тот самый «ручной» drive-команд, что раньше уходил по UART как
-``M<0/1>`` + ``O<float>`` (см. hardware.py / camera_control_v2.ino), но теперь
-бинарным 6-байтовым пакетом по SPI:
+Шлёт STM32 drive-команду 16-байтовым бинарным пакетом по SPI. Прошивка сама
+считает закон управления (ручной режим > слежение > покой), здесь мы лишь
+эмулируем то, что в бою отправляет hardware.py из данных камеры:
 
-    [0]=0xAA  [1]=0x55  [2]=flags  [3]=omega_lo  [4]=omega_hi  [5]=xor
-      flags bit0 = manual_active (1 = ручной режим включён)
-      omega      = int16 little-endian, знаковая скорость в user-units
-      xor        = XOR байтов [0..4] — контроль целостности на стороне STM32
+    [0]  0xAA      преамбула
+    [1]  0x55      преамбула
+    [2]  flags     bit0 = manual_active, bit1 = tracking
+    [3..4]   manual_omega  int16 LE  (знаковая скорость, user units)
+    [5..6]   err_n         int16 LE  (норм. ошибка ×10000, ±1.0)
+    [7..8]   derr_n        int16 LE  (норм. производная ×1000, в сек)
+    [9..10]  kp_x100       int16 LE  (Kp × 100)
+    [11..12] max_omega     int16 LE  (ограничение скорости)
+    [13..14] td_x1000      int16 LE  (Td × 1000, сек)
+    [15] xor   XOR байтов [0..14]
 
 Прошивка (firmware/stm32_nucleo_f103rb/src/main.cpp) ищет преамбулу
 ``AA 55``, проверяет контрольную сумму и печатает каждую принятую команду в
 USART2 VCP — то есть в ``task fw_serial`` ты ВИДИШЬ принятые байты, а мотор
-крутится по знаку/величине omega.
+крутится по вычисленной omega.
 
 Назначение
 ----------
@@ -40,14 +46,17 @@ USART2 VCP — то есть в ``task fw_serial`` ты ВИДИШЬ приня�
 
 Примеры
 -------
-  # включить ручной режим, постоянная скорость +40 (мотор крутится в одну сторону)
+  # ручной режим, постоянная скорость +40 (мотор крутится в одну сторону)
   python firmware/stm32_nucleo_f103rb/tools/spi_test.py --mode 1 --omega 40
 
-  # выключить привод (manual_active=0)
+  # выключить привод (manual_active=0, tracking=0)
   python firmware/stm32_nucleo_f103rb/tools/spi_test.py --mode 0
 
-  # демонстрация: плавный свип скорости от -120 до +120 и обратно
+  # демонстрация ручного режима: плавный свип скорости ±120
   python firmware/stm32_nucleo_f103rb/tools/spi_test.py --sweep
+
+  # эмуляция слежения: tracking=1, ошибка err=0.5 (полкадра), Kp=1, max_omega=60
+  python firmware/stm32_nucleo_f103rb/tools/spi_test.py --track --err 0.5 --kp 1 --max-omega 60
 
   # послать ровно один пакет и показать, что вернул STM32 по MISO
   python firmware/stm32_nucleo_f103rb/tools/spi_test.py --mode 1 --omega 25 --once
@@ -63,16 +72,32 @@ import time
 
 SYNC0 = 0xAA
 SYNC1 = 0x55
-OMEGA_LIMIT = 200  # совпадает с клампом err_raw в прошивке/легаси
+OMEGA_LIMIT = 200  # совпадает с клампом в прошивке/легаси
+ERR_N_SCALE = 10000.0
+DERR_N_SCALE = 1000.0
+KP_SCALE = 100.0
+TD_SCALE = 1000.0
+INT16_LIMIT = 32767
 
 
-def build_packet(manual_active: bool, omega: float) -> list[int]:
-    """Собрать 6-байтовый кадр {sync, sync, flags, omega_lo, omega_hi, xor}."""
-    o = int(round(omega))
-    o = max(-OMEGA_LIMIT, min(OMEGA_LIMIT, o))
-    lo, hi = struct.pack("<h", o)  # int16 little-endian -> два байта
-    flags = 0x01 if manual_active else 0x00
-    body = [SYNC0, SYNC1, flags, lo, hi]
+def _i16(v: float) -> int:
+    iv = int(round(v))
+    return max(-INT16_LIMIT, min(INT16_LIMIT, iv))
+
+
+def build_packet(manual_active: bool, omega: float, *, tracking: bool = False,
+                 err_n: float = 0.0, derr_n: float = 0.0, kp: float = 1.0,
+                 max_omega: float = 40.0, td: float = 0.0) -> list[int]:
+    """Собрать 16-байтовый control-кадр (см. модульный docstring)."""
+    o = max(-OMEGA_LIMIT, min(OMEGA_LIMIT, int(round(omega))))
+    flags = (0x01 if manual_active else 0x00) | (0x02 if tracking else 0x00)
+    body = [SYNC0, SYNC1, flags]
+    body += list(struct.pack("<h", o))
+    body += list(struct.pack("<h", _i16(max(-1.0, min(1.0, err_n)) * ERR_N_SCALE)))
+    body += list(struct.pack("<h", _i16(max(-10.0, min(10.0, derr_n)) * DERR_N_SCALE)))
+    body += list(struct.pack("<h", _i16(kp * KP_SCALE)))
+    body += list(struct.pack("<h", _i16(max_omega)))
+    body += list(struct.pack("<h", _i16(td * TD_SCALE)))
     checksum = 0
     for b in body:
         checksum ^= b
@@ -146,16 +171,44 @@ def main() -> int:
                     help="частота свипа в Гц (default 0.25 → период 4 с)")
     ap.add_argument("--echo", action="store_true",
                     help="печатать каждый отправленный пакет и ответ MISO")
+    # --- эмуляция режима слежения камеры (tracking) ---
+    ap.add_argument("--track", action="store_true",
+                    help="tracking=1: STM32 считает PD-закон по err/derr/Kp/max-omega")
+    ap.add_argument("--err", type=float, default=0.0,
+                    help="нормированная ошибка камеры ±1.0 (для --track)")
+    ap.add_argument("--derr", type=float, default=0.0,
+                    help="нормированная производная ошибки, в сек (для --track)")
+    ap.add_argument("--kp", type=float, default=1.0, help="Kp (для --track)")
+    ap.add_argument("--max-omega", type=float, default=40.0,
+                    help="ограничение скорости (для --track)")
+    ap.add_argument("--td", type=float, default=0.0,
+                    help="Td — производная составляющая, сек (для --track)")
+    ap.add_argument("--self-test", action="store_true",
+                    help="проверить сборку пакета без железа и выйти")
     args = ap.parse_args()
+
+    if args.self_test:
+        _self_test()
+        return 0
 
     spi = open_spi(args.bus, args.dev, args.speed)
     print(f"opened /dev/spidev{args.bus}.{args.dev} @ {args.speed} Hz, mode 0")
 
+    def track_kwargs() -> dict:
+        return dict(tracking=True, err_n=args.err, derr_n=args.derr,
+                    kp=args.kp, max_omega=args.max_omega, td=args.td)
+
     try:
         if args.once:
-            pkt = build_packet(bool(args.mode), args.omega)
-            send_packet(spi, pkt, echo=True)
-            print(f"sent one packet: active={args.mode} omega={int(round(args.omega))}")
+            if args.track:
+                pkt = build_packet(False, 0.0, **track_kwargs())
+                send_packet(spi, pkt, echo=True)
+                print(f"sent one tracking packet: err={args.err} kp={args.kp} "
+                      f"max_omega={args.max_omega} td={args.td}")
+            else:
+                pkt = build_packet(bool(args.mode), args.omega)
+                send_packet(spi, pkt, echo=True)
+                print(f"sent one packet: active={args.mode} omega={int(round(args.omega))}")
             return 0
 
         if args.sweep:
@@ -175,21 +228,31 @@ def main() -> int:
                 n += 1
                 time.sleep(period)
 
-        # default: continuous fixed command at --rate (держим STM32 в курсе)
+        # default: continuous command at --rate (держим STM32 в курсе)
         period = 1.0 / args.rate
-        print(
-            f"streaming active={args.mode} omega={int(round(args.omega))} "
-            f"@ {args.rate:.0f} pkt/s — Ctrl+C to stop"
-        )
+        if args.track:
+            print(
+                f"streaming tracking err={args.err} derr={args.derr} kp={args.kp} "
+                f"max_omega={args.max_omega} td={args.td} @ {args.rate:.0f} pkt/s "
+                f"— Ctrl+C to stop"
+            )
+        else:
+            print(
+                f"streaming active={args.mode} omega={int(round(args.omega))} "
+                f"@ {args.rate:.0f} pkt/s — Ctrl+C to stop"
+            )
         n = 0
         while True:
-            pkt = build_packet(bool(args.mode), args.omega)
+            if args.track:
+                pkt = build_packet(False, 0.0, **track_kwargs())
+            else:
+                pkt = build_packet(bool(args.mode), args.omega)
             send_packet(spi, pkt, echo=args.echo and (n % 25 == 0))
             n += 1
             time.sleep(period)
 
     except KeyboardInterrupt:
-        print("\nstopping — sending safe packet (active=0, omega=0)")
+        print("\nstopping — sending safe packet (all zero/off)")
     finally:
         try:
             send_packet(spi, build_packet(False, 0.0), echo=False)
@@ -197,6 +260,26 @@ def main() -> int:
             pass
         spi.close()
     return 0
+
+
+def _self_test() -> None:
+    """Sanity-check the packet builder without hardware (CI / `--self-test`)."""
+    import struct as _struct
+    cases = [
+        dict(manual_active=True, omega=40),
+        dict(manual_active=False, omega=0, tracking=True, err_n=0.5, kp=1.0,
+             max_omega=60, td=0.0),
+    ]
+    for kw in cases:
+        p = build_packet(kw.pop("manual_active"), kw.pop("omega"), **kw)
+        assert len(p) == 16, f"len {len(p)} != 16"
+        assert p[0] == SYNC0 and p[1] == SYNC1, p
+        xor = 0
+        for b in p[:15]:
+            xor ^= b
+        assert p[15] == xor, ("checksum", p)
+        _ = _struct.unpack("<h", bytes(p[3:5]))[0]
+    print("self-test OK: 16-byte packets, checksums valid")
 
 
 if __name__ == "__main__":

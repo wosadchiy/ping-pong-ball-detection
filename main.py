@@ -33,7 +33,7 @@ from camera import (
     DEFAULT_CAPTURE_H,
     DEFAULT_CAPTURE_FPS,
 )
-from hardware import ArduinoHandler
+from hardware import ArduinoHandler, Stm32SpiHandler
 # ADuC841 latency-mirror отключён по запросу — pipeline отлажен,
 # измеренная задержка ~24-25 мс на α=0.5 / 120 fps. Чтобы вернуть
 # зеркалирование на DAC0/DAC1 — раскомментируйте эту строку и
@@ -67,7 +67,7 @@ class SharedBuffer:
 
 shared = SharedBuffer()
 
-def logic_thread_func(store, detector, arduino, vs_container, recorder):
+def logic_thread_func(store, detector, arduino, vs_container, recorder, spi=None):
     prev_time = time.perf_counter()
     fps_ema = 0
     # New-frame gating. Capture-thread updates `vs.frame` whenever V4L2 hands
@@ -90,6 +90,14 @@ def logic_thread_func(store, detector, arduino, vs_container, recorder):
         res_frame, res_mask, data = detector.process(frame, store)
         arduino.send_data(*data, store)
         arduino.receive_data()
+        # Drive command to the STM32 over SPI. The STM32 runs the control law
+        # (manual override > camera tracking > rest), so we feed it the pixel
+        # error nx (data[2]) and its derivative dnx (data[4]) plus the frame
+        # half-width for resolution-independent normalisation. Independent of
+        # the legacy UART path above; no-op if SPI is unavailable.
+        if spi is not None:
+            half_width = (res_frame.shape[1] / 2.0) if res_frame is not None else 1.0
+            spi.send_state(store, float(data[2]), float(data[4]), half_width)
         # ADuC OFF — было: aduc.send_dx_dy(data[2], data[3])
         # (зеркалирование nx,ny на DAC0/DAC1 для замера latency)
         t_now = time.perf_counter()
@@ -114,6 +122,14 @@ def _parse_args():
         "--no-arduino",
         action="store_true",
         help="Не искать и не открывать serial-порт Arduino (dev-режим без железа).",
+    )
+    parser.add_argument(
+        "--no-spi",
+        action="store_true",
+        help=(
+            "Не открывать /dev/spidev0.0 к STM32 (dev-режим без железа). "
+            "Независим от --no-arduino: ручное управление мотором идёт по SPI."
+        ),
     )
     parser.add_argument(
         "--low-res",
@@ -164,7 +180,7 @@ def _parse_args():
     return parser.parse_args()
 
 
-def run_headless(args, store, arduino, detector, *, capture_w: int, capture_h: int) -> None:
+def run_headless(args, store, arduino, detector, *, capture_w: int, capture_h: int, spi=None) -> None:
     """No-UI control loop. Capture + detector + serial + recorder.
 
     Keeps everything else identical to the GUI path: the same logic_thread,
@@ -192,7 +208,7 @@ def run_headless(args, store, arduino, detector, *, capture_w: int, capture_h: i
 
     Thread(
         target=logic_thread_func,
-        args=(store, detector, arduino, [vs], recorder),
+        args=(store, detector, arduino, [vs], recorder, spi),
         daemon=True,
     ).start()
 
@@ -226,6 +242,8 @@ def run_headless(args, store, arduino, detector, *, capture_w: int, capture_h: i
         recorder.stop()
     vs.stop()
     arduino.close()
+    if spi is not None:
+        spi.close()
 
 
 def main():
@@ -254,6 +272,7 @@ def main():
 
     store = ConfigStore()
     arduino = ArduinoHandler(disabled=args.no_arduino)
+    spi = Stm32SpiHandler(disabled=args.no_spi)
     # ADuC OFF — было: aduc = AducHandler()
     # (FTDI-канал latency-зеркала, поднимал отдельный COM-порт)
     detector = BallDetector()
@@ -266,7 +285,7 @@ def main():
     if args.headless:
         run_headless(
             args, store, arduino, detector,
-            capture_w=capture_w, capture_h=capture_h,
+            capture_w=capture_w, capture_h=capture_h, spi=spi,
         )
         return
 
@@ -295,7 +314,7 @@ def main():
 
     # Запуск логики
     # ADuC OFF — раньше передавали `aduc` четвёртым аргументом.
-    Thread(target=logic_thread_func, args=(store, detector, arduino, vs_container, recorder), daemon=True).start()
+    Thread(target=logic_thread_func, args=(store, detector, arduino, vs_container, recorder, spi), daemon=True).start()
 
     # Trajectory plot bookkeeping. We sample `shared.nx` at PLOT_SAMPLE_HZ
     # (not at render rate) so the deque doesn't bloat when render FPS spikes
@@ -462,6 +481,7 @@ def main():
         recorder.stop()
     vs_container[0].stop()
     arduino.close()
+    spi.close()
     # ADuC OFF — было: aduc.close()
     dpg.destroy_context()
 

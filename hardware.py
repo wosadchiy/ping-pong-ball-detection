@@ -1,4 +1,5 @@
 import os
+import struct
 import time
 from threading import Event, Lock, Thread
 
@@ -389,3 +390,154 @@ class AducHandler:
             except Exception:
                 pass
             print("ADuC841 serial port closed.")
+
+
+class Stm32SpiHandler:
+    """SPI master link Pi 4 → STM32 Nucleo-F103RB (SPI slave on SPI2).
+
+    Replaces the UART `ArduinoHandler` path for *manual drive*: instead of
+    sending `M<0/1>` + `O<float>` text lines over a CH340 serial port (which
+    no longer exists — the motor moved to the STM32), we push a compact
+    binary frame over /dev/spidev0.0 to the firmware in
+    `firmware/stm32_nucleo_f103rb/src/main.cpp`.
+
+    The STM32 runs the control law (like the old Arduino did); Python only
+    supplies normalised camera inputs + tuning. Frame (16 bytes, MSB-first,
+    SPI mode 0) — MUST match the firmware decoder and `tools/spi_test.py`:
+
+        [0]  0xAA      preamble
+        [1]  0x55      preamble
+        [2]  flags     bit0 = manual_active, bit1 = tracking
+        [3..4]   manual_omega  int16 LE  (user units, signed)
+        [5..6]   err_n         int16 LE  (normalised error ×10000, ±1.0)
+        [7..8]   derr_n        int16 LE  (normalised d/dt   ×1000, per sec)
+        [9..10]  kp_x100       int16 LE  (Kp × 100)
+        [11..12] max_omega     int16 LE  (speed cap, user units)
+        [13..14] td_x1000      int16 LE  (derivative time Td × 1000, sec)
+        [15] xor   XOR of bytes [0..14]
+
+    Independent of the `--no-arduino` flag on purpose: that flag only skips
+    the legacy UART search. `task dev_pi` runs with `--no-arduino`, yet still
+    needs this SPI path to drive the motor. Use `--no-spi` to disable.
+    """
+
+    SYNC0 = 0xAA
+    SYNC1 = 0x55
+    PKT_LEN = 16
+    OMEGA_LIMIT = 200       # matches the firmware/legacy err_raw clamp
+    ERR_N_SCALE = 10000.0   # err_n  int16  → [-1.0, +1.0]
+    DERR_N_SCALE = 1000.0   # derr_n int16  → per-second
+    DERR_N_LIMIT = 10.0     # clamp normalised derivative before scaling
+    KP_SCALE = 100.0
+    TD_SCALE = 1000.0
+    INT16_LIMIT = 32767
+
+    def __init__(self, disabled: bool = False, bus: int = 0, dev: int = 0,
+                 speed_hz: int = 500_000):
+        self.spi = None
+        self.enabled = False
+
+        if disabled:
+            print("STM32 SPI disabled via --no-spi. Manual drive over SPI is off.")
+            return
+
+        try:
+            import spidev  # noqa: WPS433 — optional, Linux-only dependency
+        except ImportError:
+            print(
+                "spidev not installed — STM32 SPI link disabled. "
+                "Install with `pip install spidev` (Linux/Pi only)."
+            )
+            return
+
+        try:
+            self.spi = spidev.SpiDev()
+            self.spi.open(bus, dev)
+            self.spi.max_speed_hz = speed_hz
+            self.spi.mode = 0  # CPOL=0, CPHA=0 — matches the firmware
+            self.spi.bits_per_word = 8
+            self.enabled = True
+            print(f"Connected to STM32 over SPI: /dev/spidev{bus}.{dev} @ {speed_hz} Hz")
+        except FileNotFoundError:
+            print(
+                f"/dev/spidev{bus}.{dev} not found — STM32 SPI link disabled. "
+                "Enable SPI: raspi-config → Interface Options → SPI, then reboot."
+            )
+            self.spi = None
+        except Exception as e:
+            print(f"STM32 SPI open error: {type(e).__name__}: {e}")
+            self.spi = None
+
+    @staticmethod
+    def _clamp(v: float, limit: float) -> float:
+        return max(-limit, min(limit, v))
+
+    def _i16(self, v: float) -> int:
+        iv = int(round(v))
+        return max(-self.INT16_LIMIT, min(self.INT16_LIMIT, iv))
+
+    def _build_packet(self, *, manual_active: bool, tracking: bool,
+                      manual_omega: float, err_n: float, derr_n: float,
+                      kp: float, max_omega: float, td: float) -> list[int]:
+        """Pack the 16-byte control frame. err_n/derr_n are already normalised
+        to ±1 (and per-second); everything is fixed-point int16 LE."""
+        flags = (0x01 if manual_active else 0x00) | (0x02 if tracking else 0x00)
+        body = [self.SYNC0, self.SYNC1, flags]
+        body += list(struct.pack("<h", self._i16(
+            self._clamp(manual_omega, self.OMEGA_LIMIT))))
+        body += list(struct.pack("<h", self._i16(
+            self._clamp(err_n, 1.0) * self.ERR_N_SCALE)))
+        body += list(struct.pack("<h", self._i16(
+            self._clamp(derr_n, self.DERR_N_LIMIT) * self.DERR_N_SCALE)))
+        body += list(struct.pack("<h", self._i16(kp * self.KP_SCALE)))
+        body += list(struct.pack("<h", self._i16(max_omega)))
+        body += list(struct.pack("<h", self._i16(td * self.TD_SCALE)))
+        checksum = 0
+        for b in body:
+            checksum ^= b
+        return body + [checksum & 0xFF]
+
+    def send_state(self, store, nx: float, dnx: float, half_width: float) -> None:
+        """Push one control frame: manual override + camera-tracking inputs.
+
+        Called every logic-thread iteration. The 16-byte transfer at 500 kHz
+        takes ~320 µs; re-sending is harmless (the firmware has no packet
+        timeout) and lets a one-off corrupted frame self-heal next call.
+
+        `nx`/`dnx` are pixel error + its time derivative (px/sec) from the
+        detector; `half_width` = frame_width/2. We normalise here so the
+        firmware law stays resolution-independent.
+        """
+        if not (self.enabled and self.spi):
+            return
+        hw = half_width if half_width > 1.0 else 1.0
+        err_n = nx / hw
+        derr_n = dnx / hw
+        try:
+            self.spi.xfer2(self._build_packet(
+                manual_active=bool(getattr(store, "manual_omega_active", False)),
+                tracking=bool(getattr(store, "is_tracking", False)),
+                manual_omega=float(getattr(store, "manual_omega", 0.0)),
+                err_n=err_n,
+                derr_n=derr_n,
+                kp=float(getattr(store, "kp", 1.0)),
+                max_omega=float(getattr(store, "max_omega", 40.0)),
+                td=float(getattr(store, "td", 0.0)),
+            ))
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        if self.spi:
+            try:
+                # Leave the motor disabled on exit (everything zero/off).
+                self.spi.xfer2(self._build_packet(
+                    manual_active=False, tracking=False, manual_omega=0.0,
+                    err_n=0.0, derr_n=0.0, kp=0.0, max_omega=0.0, td=0.0))
+            except Exception:
+                pass
+            try:
+                self.spi.close()
+            except Exception:
+                pass
+            print("STM32 SPI port closed.")
