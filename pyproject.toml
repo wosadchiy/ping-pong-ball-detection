@@ -7,6 +7,12 @@ dev               = "python main.py"
 dev_no_arduino    = "python main.py --no-arduino"
 dev_pi            = "python main.py --no-arduino --low-res"
 dev_pi_smooth     = "python main.py --no-arduino --ui-fps 30 --texture-fps 24"
+# Full 640x480 @ 120 fps захват + детектор на полной скорости; UI
+# нарочно душим (render 15 fps, картинка 8 fps), чтобы logic-тред
+# получил максимум GIL. Ожидаемо на Pi 4 с governor=performance:
+# Logic FPS 100–120, Camera FPS 120. UI отзывчив, но картинка
+# обновляется реже — расчёт важнее визуала.
+dev_pi_perf       = "python main.py --no-arduino --cam-fps 120 --ui-fps 15 --texture-fps 8"
 headless          = "python main.py --headless"
 headless_no_arduino = "python main.py --headless --no-arduino"
 bench             = "python -m tools.bench"

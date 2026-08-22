@@ -149,7 +149,13 @@ def create_ui(
         )
 
     # Главное окно управления
-    with dpg.window(label="Dashboard", width=300, height=850, pos=[0, 0], no_close=True, no_move=True):
+    #
+    # tag + no fixed-fit: высота окна подгоняется под реальную видимую
+    # область вьюпорта в `_fit_dashboard` (см. ниже, после show_viewport).
+    # Без этого при height=850 на экране ниже ~850 px внутренний скроллбар
+    # окна оказывался за нижней кромкой экрана, и до секции DRIVE TUNING
+    # (она в самом низу, collapsed) было не доскроллить.
+    with dpg.window(label="Dashboard", tag="dashboard_window", width=300, height=850, pos=[0, 0], no_close=True, no_move=True):
         
         # СЕКЦИЯ 1: Камера и экспозиция
         with dpg.collapsing_header(label="HARDWARE SETUP", default_open=True):
@@ -272,7 +278,7 @@ def create_ui(
             _add_linked_value_control(
                 label="Kp Factor",
                 tag_prefix="kp",
-                min_value=0.0, max_value=2.0,
+                min_value=0.0, max_value=10.0,
                 default_value=float(store.kp),
                 on_change=_on_kp_change,
                 is_float=True,
@@ -313,7 +319,7 @@ def create_ui(
             _add_linked_value_control(
                 label="Max Speed",
                 tag_prefix="max_omega",
-                min_value=30, max_value=100,
+                min_value=30, max_value=400,
                 default_value=int(store.max_omega),
                 on_change=lambda v: setattr(store, 'max_omega', float(v)),
                 is_float=False,
@@ -443,6 +449,20 @@ def create_ui(
     dpg.create_viewport(title='BallTracker Pro v3.5', width=1000, height=900, vsync=False)
     dpg.setup_dearpygui()
     dpg.show_viewport()
+
+    # Подгоняем высоту Dashboard-окна под фактическую видимую высоту
+    # вьюпорта. На маленьких экранах (или в VNC-сессии Pi) ОС ужимает окно
+    # вьюпорта, и get_viewport_client_height() отдаёт РЕАЛЬНУЮ высоту, а не
+    # запрошенные 900. Приравнивая высоту окна к ней, гарантируем, что
+    # внутренний вертикальный скроллбар окна целиком попадает на экран —
+    # значит секция DRIVE TUNING внизу становится доступна колесом мыши.
+    def _fit_dashboard(*_):
+        h = dpg.get_viewport_client_height()
+        if h and h > 100:
+            dpg.configure_item("dashboard_window", height=h, pos=[0, 0])
+
+    dpg.set_viewport_resize_callback(_fit_dashboard)
+    _fit_dashboard()
 
 # Утилита для обновления текстур
 INV_255 = np.float32(1.0 / 255.0)
