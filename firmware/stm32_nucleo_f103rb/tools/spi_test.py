@@ -72,11 +72,15 @@ import time
 
 SYNC0 = 0xAA
 SYNC1 = 0x55
+RESP_SYNC0 = 0xBB
+RESP_SYNC1 = 0x66
+PKT_LEN = 20
 OMEGA_LIMIT = 200  # совпадает с клампом в прошивке/легаси
 ERR_N_SCALE = 10000.0
 DERR_N_SCALE = 1000.0
 KP_SCALE = 100.0
 TD_SCALE = 1000.0
+KD_POT_SCALE = 1000.0
 INT16_LIMIT = 32767
 
 
@@ -87,8 +91,9 @@ def _i16(v: float) -> int:
 
 def build_packet(manual_active: bool, omega: float, *, tracking: bool = False,
                  err_n: float = 0.0, derr_n: float = 0.0, kp: float = 1.0,
-                 max_omega: float = 40.0, td: float = 0.0) -> list[int]:
-    """Собрать 16-байтовый control-кадр (см. модульный docstring)."""
+                 max_omega: float = 40.0, td: float = 0.0,
+                 pot_center: int = 2048, kd_pot: float = 0.0) -> list[int]:
+    """Собрать 20-байтовый control-кадр (см. модульный docstring)."""
     o = max(-OMEGA_LIMIT, min(OMEGA_LIMIT, int(round(omega))))
     flags = (0x01 if manual_active else 0x00) | (0x02 if tracking else 0x00)
     body = [SYNC0, SYNC1, flags]
@@ -98,10 +103,36 @@ def build_packet(manual_active: bool, omega: float, *, tracking: bool = False,
     body += list(struct.pack("<h", _i16(kp * KP_SCALE)))
     body += list(struct.pack("<h", _i16(max_omega)))
     body += list(struct.pack("<h", _i16(td * TD_SCALE)))
+    body += list(struct.pack("<H", max(0, min(0xFFFF, int(pot_center)))))
+    body += list(struct.pack("<h", _i16(kd_pot * KD_POT_SCALE)))
     checksum = 0
     for b in body:
         checksum ^= b
     return body + [checksum & 0xFF]
+
+
+def parse_response(resp: list[int]) -> dict | None:
+    """Разобрать 20-байтовый ответ STM32 (см. hardware.Stm32SpiHandler).
+    Возвращает dict полей или None при рассинхроне/битой CRC.
+    """
+    if resp is None or len(resp) < PKT_LEN:
+        return None
+    buf = bytes(resp[:PKT_LEN])
+    if buf[0] != RESP_SYNC0 or buf[1] != RESP_SYNC1:
+        return None
+    cs = 0
+    for b in buf[:-1]:
+        cs ^= b
+    if cs != buf[-1]:
+        return None
+    return {
+        "pot_raw":      int.from_bytes(buf[2:4], "little", signed=False),
+        "omega_out":    int.from_bytes(buf[4:6], "little", signed=True),
+        "pot_vel":      int.from_bytes(buf[6:8], "little", signed=True),
+        "good":         int.from_bytes(buf[8:12], "little", signed=False),
+        "bad":          int.from_bytes(buf[12:16], "little", signed=False),
+        "status":       buf[16],
+    }
 
 
 def open_spi(bus: int, dev: int, speed_hz: int):
@@ -141,7 +172,15 @@ def send_packet(spi, packet: list[int], echo: bool) -> list[int]:
     if echo:
         tx = " ".join(f"{b:02X}" for b in packet)
         rx = " ".join(f"{b:02X}" for b in returned)
-        print(f"TX [{tx}]   MISO [{rx}]")
+        print(f"TX [{tx}]")
+        print(f"RX [{rx}]")
+        parsed = parse_response(returned)
+        if parsed is not None:
+            print(f"  → pot={parsed['pot_raw']:4d}  omega={parsed['omega_out']:+4d}"
+                  f"  pvel={parsed['pot_vel']:+6d}  good={parsed['good']}"
+                  f"  bad={parsed['bad']}  status=0x{parsed['status']:02X}")
+        else:
+            print("  → response frame invalid (sync/xor mismatch)")
     return returned
 
 
@@ -183,6 +222,10 @@ def main() -> int:
                     help="ограничение скорости (для --track)")
     ap.add_argument("--td", type=float, default=0.0,
                     help="Td — производная составляющая, сек (для --track)")
+    ap.add_argument("--pot-center", type=int, default=2048,
+                    help="средняя точка потенциометра, 0..4095 (default 2048)")
+    ap.add_argument("--kd-pot", type=float, default=0.0,
+                    help="Kd для скорости вала (знаковый, 0=выкл; для --track)")
     ap.add_argument("--self-test", action="store_true",
                     help="проверить сборку пакета без железа и выйти")
     args = ap.parse_args()
@@ -196,7 +239,11 @@ def main() -> int:
 
     def track_kwargs() -> dict:
         return dict(tracking=True, err_n=args.err, derr_n=args.derr,
-                    kp=args.kp, max_omega=args.max_omega, td=args.td)
+                    kp=args.kp, max_omega=args.max_omega, td=args.td,
+                    pot_center=args.pot_center, kd_pot=args.kd_pot)
+
+    def manual_kwargs() -> dict:
+        return dict(pot_center=args.pot_center, kd_pot=args.kd_pot)
 
     try:
         if args.once:
@@ -206,7 +253,7 @@ def main() -> int:
                 print(f"sent one tracking packet: err={args.err} kp={args.kp} "
                       f"max_omega={args.max_omega} td={args.td}")
             else:
-                pkt = build_packet(bool(args.mode), args.omega)
+                pkt = build_packet(bool(args.mode), args.omega, **manual_kwargs())
                 send_packet(spi, pkt, echo=True)
                 print(f"sent one packet: active={args.mode} omega={int(round(args.omega))}")
             return 0
@@ -223,7 +270,7 @@ def main() -> int:
             while True:
                 t = time.monotonic() - t0
                 omega = args.sweep_amp * math.sin(w * t)
-                pkt = build_packet(True, omega)
+                pkt = build_packet(True, omega, **manual_kwargs())
                 send_packet(spi, pkt, echo=args.echo and (n % 25 == 0))
                 n += 1
                 time.sleep(period)
@@ -246,7 +293,7 @@ def main() -> int:
             if args.track:
                 pkt = build_packet(False, 0.0, **track_kwargs())
             else:
-                pkt = build_packet(bool(args.mode), args.omega)
+                pkt = build_packet(bool(args.mode), args.omega, **manual_kwargs())
             send_packet(spi, pkt, echo=args.echo and (n % 25 == 0))
             n += 1
             time.sleep(period)
@@ -255,7 +302,7 @@ def main() -> int:
         print("\nstopping — sending safe packet (all zero/off)")
     finally:
         try:
-            send_packet(spi, build_packet(False, 0.0), echo=False)
+            send_packet(spi, build_packet(False, 0.0, **manual_kwargs()), echo=False)
         except Exception:
             pass
         spi.close()
@@ -269,17 +316,35 @@ def _self_test() -> None:
         dict(manual_active=True, omega=40),
         dict(manual_active=False, omega=0, tracking=True, err_n=0.5, kp=1.0,
              max_omega=60, td=0.0),
+        dict(manual_active=False, omega=0, tracking=True, err_n=-0.3,
+             kp=2.5, max_omega=100, td=0.05, pot_center=1700, kd_pot=-0.4),
     ]
     for kw in cases:
         p = build_packet(kw.pop("manual_active"), kw.pop("omega"), **kw)
-        assert len(p) == 16, f"len {len(p)} != 16"
+        assert len(p) == PKT_LEN, f"len {len(p)} != {PKT_LEN}"
         assert p[0] == SYNC0 and p[1] == SYNC1, p
         xor = 0
-        for b in p[:15]:
+        for b in p[:PKT_LEN - 1]:
             xor ^= b
-        assert p[15] == xor, ("checksum", p)
+        assert p[PKT_LEN - 1] == xor, ("checksum", p)
         _ = _struct.unpack("<h", bytes(p[3:5]))[0]
-    print("self-test OK: 16-byte packets, checksums valid")
+
+    # Sanity check for response parser: pot=2048, omega=32, pvel=1000,
+    # good=10, bad=0, status=driving+tracking, reserved=0.
+    frame = [RESP_SYNC0, RESP_SYNC1, 0x00, 0x08, 0x20, 0x00, 0xE8, 0x03,
+             0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06,
+             0x00, 0x00]
+    cs = 0
+    for b in frame:
+        cs ^= b
+    frame.append(cs)
+    parsed = parse_response(frame)
+    assert parsed is not None, "response parser rejected a valid frame"
+    assert parsed["pot_raw"] == 2048, parsed
+    assert parsed["omega_out"] == 32, parsed
+    assert parsed["pot_vel"] == 1000, parsed
+    assert parsed["good"] == 10, parsed
+    print(f"self-test OK: {PKT_LEN}-byte request+response packets, checksums valid")
 
 
 if __name__ == "__main__":

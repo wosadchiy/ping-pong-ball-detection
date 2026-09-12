@@ -331,6 +331,83 @@ def create_ui(
             dpg.add_button(label="TOGGLE MASK VIEW (M)", width=-1, callback=toggle_mask_window)
             dpg.add_button(label="SAVE ALL SETTINGS", width=-1, callback=store.save_to_json)
 
+        # ─── SHAFT FEEDBACK ────────────────────────────────────────────
+        # Потенциометр на PA0 STM32, ремённая передача с валом камеры.
+        # Прошивка семплирует ADC на ~1 кГц, EMA-сглаживает и шлёт значение
+        # обратно по MISO вместе с оценкой скорости. Здесь только показ
+        # телеметрии, калибровка «центра» и вес обратной связи в PD-законе.
+        with dpg.collapsing_header(label="SHAFT FEEDBACK", default_open=True):
+            # Отображаемые метки — тэги фиксированные, main.py каждый
+            # рендер-цикл вливает свежие значения через dpg.set_value.
+            dpg.add_text(f"Pot raw:    0 / 4095", tag="ui_pot_raw",
+                         color=[180, 220, 255])
+            dpg.add_text(f"Pot - center: 0",     tag="ui_pot_rel",
+                         color=[180, 220, 255])
+            dpg.add_text(f"Pot velocity: 0 u/s", tag="ui_pot_vel",
+                         color=[180, 220, 255])
+            # Прогрессбар от 0..1 — визуальный «где сейчас вал» относительно
+            # полного диапазона ADC. Быстрая проверка «не упёрлись ли».
+            dpg.add_progress_bar(default_value=0.0, tag="ui_pot_bar",
+                                 overlay="pot", width=-1)
+
+            def _set_center(*_):
+                # Забираем последнее прочитанное значение из store — оно
+                # уже отфильтровано EMA на стороне STM32, лишний раз тут
+                # не сглаживаем. Сохраняем сразу в json, чтобы центр
+                # переживал перезапуск.
+                cur = int(getattr(store, 'pot_raw', 0))
+                store.pot_center = cur
+                dpg.set_value("input_pot_center", cur)
+                dpg.set_value("slider_pot_center", cur)
+                store.save_to_json()
+                print(f"[ui] pot_center set to {cur}")
+
+            dpg.add_button(label="SET CURRENT AS CENTER", width=-1,
+                           callback=_set_center)
+            with dpg.tooltip(dpg.last_item()):
+                dpg.add_text(
+                    "Freezes the current potentiometer value as the\n"
+                    "middle point. Used in UI to show the deviation\n"
+                    "and (in the future) for soft end stoppers."
+                )
+
+            _add_linked_value_control(
+                label="Pot center (raw)",
+                tag_prefix="pot_center",
+                min_value=0, max_value=4095,
+                default_value=int(store.pot_center),
+                on_change=lambda v: setattr(store, 'pot_center', int(v)),
+                is_float=False,
+                step=1, step_fast=100,
+            )
+
+            _add_linked_value_control(
+                label="Kd (pot velocity)",
+                tag_prefix="kd_pot",
+                min_value=-2.0, max_value=2.0,
+                default_value=float(store.kd_pot),
+                on_change=lambda v: setattr(store, 'kd_pot', float(v)),
+                is_float=True,
+                fmt="%.3f",
+                step=0.01, step_fast=0.1,
+            )
+            with dpg.tooltip("slider_kd_pot"):
+                dpg.add_text(
+                    "Weight of velocity feedback from the shaft (tachofeedback).\n"
+                    "Прошивка считает: drive = (err + Td*derr_cam - \n"
+                    "                            Kd_pot*pot_vel_n) * Kp\n"
+                    "Kd_pot=0 → shaft feedback disabled (pure camera PD).\n"
+                    "Start with ~0.1 and raise until you see noticeable\n"
+                    "damping. If the reaction goes in the wrong direction\n"
+                    "(motor accelerates instead of slowing down) — just\n"
+                    "put a negative sign: it means the belt is running in\n"
+                    "the opposite direction."
+                )
+
+            # Пакетная статистика с STM32 — быстрая индикация «жив ли SPI».
+            dpg.add_text("SPI good: 0  bad: 0", tag="ui_spi_stats",
+                         color=[160, 160, 160])
+
         # СЕКЦИЯ 6: Тюнинг привода без камеры.
         #
         # Сценарий: камера физически снята с вала, нужно прогнать мотор на
@@ -420,7 +497,7 @@ def create_ui(
     # `main.py`. Pendulum motion in front of the camera should produce a
     # clean sinusoid here.
     with dpg.window(
-        label="Trajectory: ball X delta -> Arduino",
+        label="Trajectory: ball X delta -> STM32 Nucleo",
         tag="trajectory_window",
         pos=[310, 520],
         width=640,

@@ -132,6 +132,19 @@ class ConfigStore:
         self.manual_omega_active = False
         self.manual_omega = 0.0
 
+        # Shaft-feedback (потенциометр на PA0 через ремённую передачу с
+        # валом камеры). `pot_center` — калибровочная средняя точка (кнопка
+        # «Set center» в UI). `kd_pot` — вес тахо-обратной связи в PD-законе
+        # на STM32; знак задаёт направление (если ремень «в другую
+        # сторону» — ставим отрицательный, обратная связь превратится в
+        # положительную и наоборот). 0 = обратная связь по валу отключена.
+        # `pot_raw`/`pot_vel` — только текущее значение с STM32; не
+        # сохраняем, но живут в store, чтобы UI читал в одном месте.
+        self.pot_center = 2048       # мидпоинт 12-битного ADC
+        self.kd_pot = 0.0
+        self.pot_raw = 0             # runtime-only (см. exclude ниже)
+        self.pot_vel = 0             # runtime-only
+
         # Привязка USB-UVC камеры на macOS (используется uvc-util для управления
         # экспозицией). Если камер UVC несколько — задайте либо часть имени
         # (например "Global Shutter"), либо точные vendor/product ID. При
@@ -173,6 +186,9 @@ class ConfigStore:
             # Drive-tuning override is session-only: each launch starts
             # in camera mode regardless of how the previous session ended.
             "manual_omega_active",
+            # Runtime-only shaft telemetry (обновляется каждый кадр из
+            # SPI-ответа STM32 — сохранять его в файл бессмысленно).
+            "pot_raw", "pot_vel",
         }
         data = {
             k: v for k, v in self.__dict__.items()

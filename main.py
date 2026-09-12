@@ -98,6 +98,13 @@ def logic_thread_func(store, detector, arduino, vs_container, recorder, spi=None
         if spi is not None:
             half_width = (res_frame.shape[1] / 2.0) if res_frame is not None else 1.0
             spi.send_state(store, float(data[2]), float(data[4]), half_width)
+            # Пробрасываем shaft-телеметрию с STM32 в store — так UI
+            # (render-тред) читает pot_raw/pot_vel из единого места, не
+            # трогая spi-хендлер напрямую. При падении ответа держим
+            # последние валидные значения — пусть UI не «моргает».
+            if spi.resp_ok:
+                store.pot_raw = int(spi.pot_raw)
+                store.pot_vel = int(spi.pot_vel)
         # ADuC OFF — было: aduc.send_dx_dy(data[2], data[3])
         # (зеркалирование nx,ny на DAC0/DAC1 для замера latency)
         t_now = time.perf_counter()
@@ -403,6 +410,25 @@ def main():
             # is what AVFoundation/V4L2/DShow actually delivers, ignoring how
             # often we re-process the same frame in the logic loop.
             dpg.set_value("ui_cam_fps", f"Camera FPS: {vs_container[0].cam_fps:.1f}")
+
+            # Shaft-feedback readouts. STM32 шлёт pot_raw/pot_vel в каждом
+            # SPI-ответе (см. hardware.Stm32SpiHandler._parse_response);
+            # logic-тред кладёт их в store. Здесь только выводим — без
+            # лишних вычислений на GIL. При отключённом SPI поля остаются
+            # нулевыми, UI показывает «Pot raw: 0 / 4095».
+            _pot_raw = int(getattr(store, 'pot_raw', 0))
+            _pot_vel = int(getattr(store, 'pot_vel', 0))
+            _pot_center = int(getattr(store, 'pot_center', 2048))
+            dpg.set_value("ui_pot_raw", f"Pot raw:    {_pot_raw} / 4095")
+            dpg.set_value("ui_pot_rel", f"Pot - center: {_pot_raw - _pot_center:+d}")
+            dpg.set_value("ui_pot_vel", f"Pot velocity: {_pot_vel} u/s")
+            dpg.set_value("ui_pot_bar", max(0.0, min(1.0, _pot_raw / 4095.0)))
+            dpg.set_value(
+                "ui_spi_stats",
+                f"SPI good: {spi.good_packets}  bad: {spi.bad_packets}"
+                if getattr(spi, 'enabled', False)
+                else "SPI: disabled"
+            )
 
             # Recording status — refreshed on every frame; cheap (one stat()).
             rec_status = recorder.status()

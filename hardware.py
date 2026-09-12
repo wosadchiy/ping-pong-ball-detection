@@ -395,47 +395,81 @@ class AducHandler:
 class Stm32SpiHandler:
     """SPI master link Pi 4 → STM32 Nucleo-F103RB (SPI slave on SPI2).
 
-    Replaces the UART `ArduinoHandler` path for *manual drive*: instead of
-    sending `M<0/1>` + `O<float>` text lines over a CH340 serial port (which
-    no longer exists — the motor moved to the STM32), we push a compact
-    binary frame over /dev/spidev0.0 to the firmware in
-    `firmware/stm32_nucleo_f103rb/src/main.cpp`.
+    Replaces the UART `ArduinoHandler` path for the motor: full-duplex
+    exchange with the firmware in `firmware/stm32_nucleo_f103rb/src/main.cpp`.
 
     The STM32 runs the control law (like the old Arduino did); Python only
-    supplies normalised camera inputs + tuning. Frame (16 bytes, MSB-first,
-    SPI mode 0) — MUST match the firmware decoder and `tools/spi_test.py`:
+    supplies normalised camera inputs + tuning knobs. On every transfer the
+    STM32 shifts telemetry back: raw potentiometer value (belt-coupled to
+    the camera shaft), pot velocity, current commanded omega, packet stats.
 
-        [0]  0xAA      preamble
-        [1]  0x55      preamble
-        [2]  flags     bit0 = manual_active, bit1 = tracking
-        [3..4]   manual_omega  int16 LE  (user units, signed)
-        [5..6]   err_n         int16 LE  (normalised error ×10000, ±1.0)
-        [7..8]   derr_n        int16 LE  (normalised d/dt   ×1000, per sec)
-        [9..10]  kp_x100       int16 LE  (Kp × 100)
-        [11..12] max_omega     int16 LE  (speed cap, user units)
-        [13..14] td_x1000      int16 LE  (derivative time Td × 1000, sec)
-        [15] xor   XOR of bytes [0..14]
+    REQUEST frame — 20 bytes, MSB-first, SPI mode 0. MUST match firmware
+    decoder and `tools/spi_test.py`:
 
-    Independent of the `--no-arduino` flag on purpose: that flag only skips
-    the legacy UART search. `task dev_pi` runs with `--no-arduino`, yet still
-    needs this SPI path to drive the motor. Use `--no-spi` to disable.
+        [0]      0xAA        preamble
+        [1]      0x55        preamble
+        [2]      flags       bit0 = manual_active, bit1 = tracking
+        [3..4]   manual_omega   int16 LE  (user units, signed)
+        [5..6]   err_n          int16 LE  (normalised error ×10000, ±1.0)
+        [7..8]   derr_n         int16 LE  (normalised d/dt ×1000, per sec)
+        [9..10]  kp_x100        int16 LE  (Kp × 100)
+        [11..12] max_omega      int16 LE  (speed cap, user units)
+        [13..14] td_x1000       int16 LE  (Td × 1000, sec — camera derr weight)
+        [15..16] pot_center     uint16 LE (0..4095; reserved for soft-limits)
+        [17..18] kd_pot_x1000   int16 LE  (signed pot-velocity feedback weight)
+        [19]     xor            XOR of bytes [0..18]
+
+    RESPONSE frame — 20 bytes shifted in on MISO during the same transfer:
+
+        [0]      0xBB        preamble
+        [1]      0x66        preamble
+        [2..3]   pot_raw        uint16 LE (0..4095, EMA-smoothed)
+        [4..5]   omega_out      int16 LE  (current commanded omega)
+        [6..7]   pot_vel        int16 LE  (ADC units/sec)
+        [8..11]  good_packets   uint32 LE
+        [12..15] bad_packets    uint32 LE
+        [16]     status         bit0=manual, bit1=tracking, bit2=driving
+        [17..18] reserved       (0)
+        [19]     xor            XOR of bytes [0..18]
+
+    Latest telemetry is exposed as public attributes (`pot_raw`, `pot_vel`,
+    `omega_out`, `good_packets`, `bad_packets`, `resp_ok`) — the UI reads
+    them for the SHAFT FEEDBACK section.
+
+    Independent of the `--no-arduino` flag: that flag only skips the legacy
+    UART search. Use `--no-spi` to disable this handler.
     """
 
     SYNC0 = 0xAA
     SYNC1 = 0x55
-    PKT_LEN = 16
+    RESP_SYNC0 = 0xBB
+    RESP_SYNC1 = 0x66
+    PKT_LEN = 20
     OMEGA_LIMIT = 200       # matches the firmware/legacy err_raw clamp
     ERR_N_SCALE = 10000.0   # err_n  int16  → [-1.0, +1.0]
     DERR_N_SCALE = 1000.0   # derr_n int16  → per-second
     DERR_N_LIMIT = 10.0     # clamp normalised derivative before scaling
     KP_SCALE = 100.0
     TD_SCALE = 1000.0
+    KD_POT_SCALE = 1000.0   # kd_pot int16 → user float
+    POT_MAX = 4095          # 12-bit ADC full-scale on F103
     INT16_LIMIT = 32767
 
     def __init__(self, disabled: bool = False, bus: int = 0, dev: int = 0,
                  speed_hz: int = 500_000):
         self.spi = None
         self.enabled = False
+
+        # Latest telemetry from the STM32 (updated by send_state on every
+        # transfer). Sentinels remain when SPI is disabled or a frame is
+        # corrupt, so UI code can always read them safely.
+        self.pot_raw: int = 0
+        self.pot_vel: int = 0
+        self.omega_out: int = 0
+        self.status_flags: int = 0
+        self.good_packets: int = 0
+        self.bad_packets: int = 0
+        self.resp_ok: bool = False   # last response frame parsed cleanly
 
         if disabled:
             print("STM32 SPI disabled via --no-spi. Manual drive over SPI is off.")
@@ -478,9 +512,11 @@ class Stm32SpiHandler:
 
     def _build_packet(self, *, manual_active: bool, tracking: bool,
                       manual_omega: float, err_n: float, derr_n: float,
-                      kp: float, max_omega: float, td: float) -> list[int]:
-        """Pack the 16-byte control frame. err_n/derr_n are already normalised
-        to ±1 (and per-second); everything is fixed-point int16 LE."""
+                      kp: float, max_omega: float, td: float,
+                      pot_center: int, kd_pot: float) -> list[int]:
+        """Pack the 20-byte control frame. Normalised inputs are already in
+        ±1 units (err_n) or per-second (derr_n); everything is fixed-point
+        int16 LE apart from pot_center (uint16)."""
         flags = (0x01 if manual_active else 0x00) | (0x02 if tracking else 0x00)
         body = [self.SYNC0, self.SYNC1, flags]
         body += list(struct.pack("<h", self._i16(
@@ -492,40 +528,73 @@ class Stm32SpiHandler:
         body += list(struct.pack("<h", self._i16(kp * self.KP_SCALE)))
         body += list(struct.pack("<h", self._i16(max_omega)))
         body += list(struct.pack("<h", self._i16(td * self.TD_SCALE)))
+        pc = max(0, min(0xFFFF, int(pot_center)))
+        body += list(struct.pack("<H", pc))
+        body += list(struct.pack("<h", self._i16(kd_pot * self.KD_POT_SCALE)))
         checksum = 0
         for b in body:
             checksum ^= b
         return body + [checksum & 0xFF]
 
-    def send_state(self, store, nx: float, dnx: float, half_width: float) -> None:
-        """Push one control frame: manual override + camera-tracking inputs.
+    def _parse_response(self, resp) -> bool:
+        """Validate + decode the 20-byte MISO frame. Populates public
+        attributes; returns True on success. Silently ignores bad frames
+        (the caller's cached last-good values remain unchanged then)."""
+        if resp is None or len(resp) < self.PKT_LEN:
+            return False
+        buf = bytes(resp[:self.PKT_LEN])
+        if buf[0] != self.RESP_SYNC0 or buf[1] != self.RESP_SYNC1:
+            return False
+        cs = 0
+        for b in buf[:-1]:
+            cs ^= b
+        if cs != buf[-1]:
+            return False
+        self.pot_raw = int.from_bytes(buf[2:4], "little", signed=False)
+        self.omega_out = int.from_bytes(buf[4:6], "little", signed=True)
+        self.pot_vel = int.from_bytes(buf[6:8], "little", signed=True)
+        self.good_packets = int.from_bytes(buf[8:12], "little", signed=False)
+        self.bad_packets = int.from_bytes(buf[12:16], "little", signed=False)
+        self.status_flags = buf[16]
+        return True
 
-        Called every logic-thread iteration. The 16-byte transfer at 500 kHz
-        takes ~320 µs; re-sending is harmless (the firmware has no packet
+    def send_state(self, store, nx: float, dnx: float, half_width: float) -> None:
+        """Push one control frame and read back telemetry (full-duplex).
+
+        Called every logic-thread iteration. The 20-byte transfer at 500 kHz
+        takes ~400 µs; re-sending is harmless (the firmware has no packet
         timeout) and lets a one-off corrupted frame self-heal next call.
 
         `nx`/`dnx` are pixel error + its time derivative (px/sec) from the
         detector; `half_width` = frame_width/2. We normalise here so the
         firmware law stays resolution-independent.
+
+        Response bytes shifted in on MISO are parsed into `pot_raw`,
+        `pot_vel`, `omega_out` etc. — the UI reads them for the SHAFT
+        FEEDBACK display.
         """
         if not (self.enabled and self.spi):
             return
         hw = half_width if half_width > 1.0 else 1.0
         err_n = nx / hw
         derr_n = dnx / hw
+        pkt = self._build_packet(
+            manual_active=bool(getattr(store, "manual_omega_active", False)),
+            tracking=bool(getattr(store, "is_tracking", False)),
+            manual_omega=float(getattr(store, "manual_omega", 0.0)),
+            err_n=err_n,
+            derr_n=derr_n,
+            kp=float(getattr(store, "kp", 1.0)),
+            max_omega=float(getattr(store, "max_omega", 40.0)),
+            td=float(getattr(store, "td", 0.0)),
+            pot_center=int(getattr(store, "pot_center", self.POT_MAX // 2)),
+            kd_pot=float(getattr(store, "kd_pot", 0.0)),
+        )
         try:
-            self.spi.xfer2(self._build_packet(
-                manual_active=bool(getattr(store, "manual_omega_active", False)),
-                tracking=bool(getattr(store, "is_tracking", False)),
-                manual_omega=float(getattr(store, "manual_omega", 0.0)),
-                err_n=err_n,
-                derr_n=derr_n,
-                kp=float(getattr(store, "kp", 1.0)),
-                max_omega=float(getattr(store, "max_omega", 40.0)),
-                td=float(getattr(store, "td", 0.0)),
-            ))
+            resp = self.spi.xfer2(pkt)
+            self.resp_ok = self._parse_response(resp)
         except OSError:
-            pass
+            self.resp_ok = False
 
     def close(self) -> None:
         if self.spi:
@@ -533,7 +602,8 @@ class Stm32SpiHandler:
                 # Leave the motor disabled on exit (everything zero/off).
                 self.spi.xfer2(self._build_packet(
                     manual_active=False, tracking=False, manual_omega=0.0,
-                    err_n=0.0, derr_n=0.0, kp=0.0, max_omega=0.0, td=0.0))
+                    err_n=0.0, derr_n=0.0, kp=0.0, max_omega=0.0, td=0.0,
+                    pot_center=self.POT_MAX // 2, kd_pot=0.0))
             except Exception:
                 pass
             try:
