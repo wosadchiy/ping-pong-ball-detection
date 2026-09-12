@@ -13,6 +13,12 @@ dev_pi_smooth     = "python main.py --no-arduino --ui-fps 30 --texture-fps 24"
 # Logic FPS 100–120, Camera FPS 120. UI отзывчив, но картинка
 # обновляется реже — расчёт важнее визуала.
 dev_pi_perf       = "python main.py --no-arduino --cam-fps 120 --ui-fps 15 --texture-fps 8"
+# Те же настройки, что и dev_pi_perf, но с уменьшенным V4L2 BUFFERSIZE:
+# --cam-buffer 2 срезает ~8 мс задержки конвейера камеры при сохранении
+# 120 fps на большинстве конфигураций Pi 4. --cam-buffer 1 срежет ещё
+# ~8 мс, но может уронить FPS до 60 — сверься с шапкой UI после старта.
+dev_pi_perf_lb2   = "python main.py --no-arduino --cam-fps 120 --ui-fps 15 --texture-fps 8 --cam-buffer 2"
+dev_pi_perf_lb1   = "python main.py --no-arduino --cam-fps 120 --ui-fps 15 --texture-fps 8 --cam-buffer 1"
 headless          = "python main.py --headless"
 headless_no_arduino = "python main.py --headless --no-arduino"
 bench             = "python -m tools.bench"

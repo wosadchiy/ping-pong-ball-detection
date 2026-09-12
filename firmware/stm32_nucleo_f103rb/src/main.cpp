@@ -1,18 +1,30 @@
 /**
- * STM32 Nucleo-F103RB — SPI drive controller with pot feedback (Step 3.2).
+ * STM32 Nucleo-F103RB — SPI drive controller with pot feedback (Step 3.3).
  *
  * Что делает эта прошивка
  * -----------------------
  *  • Работает SPI-slave на SPI2 (Pi 4 — master через /dev/spidev0.0).
- *  • Принимает 20-байтовый запрос (control-frame) и ОДНОВРЕМЕННО (full-duplex)
- *    отдаёт 20-байтовый ответ с телеметрией: сырое значение потенциометра,
+ *  • Принимает 22-байтовый запрос (control-frame) и ОДНОВРЕМЕННО (full-duplex)
+ *    отдаёт 22-байтовый ответ с телеметрией: сырое значение потенциометра,
  *    текущую команду omega, оценку скорости вала, счётчики good/bad-пакетов.
  *  • Читает потенциометр на PA0 (12-битный ADC), EMA-сглаживает и оценивает
  *    угловую скорость вала — реальный «тахо-фидбэк» вместо шумной производной
  *    ошибки от камеры.
  *  • Считает закон управления НА МК (Python шлёт только нормированные входы):
  *        manual_active → omega = manual_omega
- *        tracking      → drive = clamp((err_n + Td·derr_n - Kd_pot·pot_vel_n)·Kp, ±1)
+ *        tracking      → drive_base = (err_n + Td·derr_n) · Kp
+ *                        drive_damp = -Kd_pot · HP_filter(pot_vel_n)
+ *                              (HP-фильтр гасит МЕХ. РИНГ вала, не тормозит
+ *                               медленную полезную скорость к цели)
+ *                        drive_kick = kick_bias · sign(err)  ← dead-zone
+ *                              eliminator с ГИСТЕРЕЗИСОМ Шмитта:
+ *                              включается при |err|>HI (~10 px),
+ *                              выключается при |err|<LO (~3 px). Не
+ *                              создаёт лимит-цикл вокруг цели, а на
+ *                              трекинге сдвигает drive выше дед-зоны
+ *                              степпера (0 → 25 Hz) и компенсирует
+ *                              трение покоя ремня.
+ *                        drive = clamp(drive_base + drive_damp + drive_kick, ±1)
  *                        omega = drive · max_omega
  *        иначе         → omega = 0 (катушки отпущены)
  *  • Печатает heartbeat в USART2 VCP: значения команды + pot_raw + счётчики.
@@ -21,7 +33,7 @@
  *
  * SPI PROTOCOL (must match Stm32SpiHandler in hardware.py + tools/spi_test.py)
  * ---------------------------------------------------------------------------
- * REQUEST — Pi → STM32, 20 байт, MSB-first, SPI mode 0:
+ * REQUEST — Pi → STM32, 22 байта, MSB-first, SPI mode 0:
  *      [0]      0xAA        preamble
  *      [1]      0x55        preamble
  *      [2]      flags       bit0=manual_active, bit1=tracking
@@ -32,10 +44,11 @@
  *      [11..12] max_omega     int16 LE   (потолок скорости, user units)
  *      [13..14] td_x1000      int16 LE   (Td × 1000, сек — вес derr_n от камеры)
  *      [15..16] pot_center    uint16 LE  (0..4095, зарезервировано для soft-limits)
- *      [17..18] kd_pot_x1000  int16 LE   (Kd для скорости вала, знаковый — direction)
- *      [19]     xor           XOR байтов [0..18]
+ *      [17..18] kd_pot_x1000  int16 LE   (Kd для HP-фильтр. скорости вала)
+ *      [19..20] kick_x1000    int16 LE   (anti-stiction bias × 1000, 0..255 ≈ 0..0.25)
+ *      [21]     xor           XOR байтов [0..20]
  *
- * RESPONSE — STM32 → Pi, 20 байт (shifts out по MISO одновременно с запросом):
+ * RESPONSE — STM32 → Pi, 22 байта (shifts out по MISO одновременно с запросом):
  *      [0]      0xBB        preamble
  *      [1]      0x66        preamble
  *      [2..3]   pot_raw        uint16 LE  (0..4095, EMA-сглажено)
@@ -43,9 +56,11 @@
  *      [6..7]   pot_vel        int16 LE   (скорость вала, ADC-units/сек, кламп int16)
  *      [8..11]  good_packets   uint32 LE  (счётчик валидных запросов от Pi)
  *      [12..15] bad_packets    uint32 LE  (сбои XOR / потеря синхронизации)
- *      [16]     status         bit0=manual, bit1=tracking, bit2=driving
+ *      [16]     status         bit0=manual, bit1=tracking, bit2=driving,
+ *                                          bit3=kick_active (anti-stiction fires)
  *      [17..18] reserved       (0)
- *      [19]     xor            XOR байтов [0..18]
+ *      [19..20] pot_vel_hp     int16 LE   (HP-фильтр. скорость вала, для диагностики)
+ *      [21]     xor            XOR байтов [0..20]
  *
  *  Синхронизация tx-буфера: сброс g_txIdx на приёме 0xAA (первый байт кадра).
  *  Между кадрами DR предзаряжен байтом tx[0]=0xBB — Pi всегда видит корректный
@@ -105,7 +120,7 @@ constexpr uint8_t  SPI_SYNC0    = 0xAA;
 constexpr uint8_t  SPI_SYNC1    = 0x55;
 constexpr uint8_t  SPI_TX_SYNC0 = 0xBB;   // preamble ответа (MISO)
 constexpr uint8_t  SPI_TX_SYNC1 = 0x66;
-constexpr uint8_t  SPI_PKT_LEN  = 20;
+constexpr uint8_t  SPI_PKT_LEN  = 22;   // расширили с 20 до 22 (kick_bias + hp_vel)
 
 // Fixed-point scales, согласованные с Pi. Синхронно править в hardware.py.
 constexpr float ERR_N_SCALE  = 10000.0f;   // err_n    int16  → [-1.0, +1.0]
@@ -113,6 +128,19 @@ constexpr float DERR_N_SCALE = 1000.0f;    // derr_n   int16  → per-second
 constexpr float KP_SCALE     = 100.0f;     // kp_x100  int16  → Kp
 constexpr float TD_SCALE     = 1000.0f;    // td_x1000 int16  → Td (сек)
 constexpr float KD_POT_SCALE = 1000.0f;    // kd_pot_x1000 int16 → Kd_pot
+constexpr float KICK_SCALE   = 1000.0f;    // kick_x1000   int16 → kick_bias (normalized)
+
+// Пороги anti-stiction кика с ГИСТЕРЕЗИСОМ. err — нормированный (±1).
+// Кик срабатывает как «dead-zone eliminator» — сдвигает drive выше
+// дискретной дед-зоны степпера. Гистерезис нужен, чтобы при остановке
+// у цели kick не создавал лимит-цикл (err=+5 → kick=+ → шаг →
+// err=-5 → kick=- → шаг → ...):
+//   • ВНЕ гистерезиса (idle): включаем kick только когда |err| > HI.
+//   • В ГИСТЕРЕЗИСЕ (kicking): удерживаем, пока |err| > LO. Если
+//     упало ниже LO — «цель поймана», отпускаем kick и ждём нового
+//     заметного возмущения.
+constexpr float KICK_ERR_HI = 0.030f;      // ~10 px — включение
+constexpr float KICK_ERR_LO = 0.008f;      // ~3 px  — выключение (deadband)
 
 // Нормировка pot-скорости. При «полном ходе» вала ~ADC diff = 4096 единиц.
 // POT_VEL_NORM = 4096 units/sec → нормированная pot-скорость = 1.0. Значит
@@ -133,6 +161,14 @@ constexpr uint16_t POT_EMA_B = 3;
 constexpr int32_t  VEL_EMA_A = 1;
 constexpr int32_t  VEL_EMA_B = 7;
 
+// Медленный LPF для HP-фильтрации pot_vel. HP = raw − LPF.
+// При sample rate 1 кГц, α=1, β=31 → τ ≈ 32 мс → cutoff ≈ 5 Hz.
+// Всё что медленнее 5 Гц (ходьба вала за мячом на 0.1-2 Гц) — уходит в LPF,
+// а HP ≈ 0. Всё что быстрее 5 Гц (мех. звон, зубцы, вибрация) — идёт в HP.
+// Kd_pot гасит именно этот HP, не мешая полезному отслеживанию.
+constexpr int32_t  VEL_LPF_A = 1;
+constexpr int32_t  VEL_LPF_B = 31;
+
 // ──────────────────────────────────────────────────────────────────────────
 // Shared state (volatile: writers in ISR, readers в loop() под noInterrupts).
 // ──────────────────────────────────────────────────────────────────────────
@@ -146,12 +182,14 @@ static volatile int16_t  g_maxOmega     = 0;
 static volatile int16_t  g_tdX1000      = 0;
 static volatile uint16_t g_potCenter    = 2048;  // пока не используется в законе
 static volatile int16_t  g_kdPotX1000   = 0;
+static volatile int16_t  g_kickX1000    = 0;
 static volatile uint32_t g_goodPackets  = 0;
 static volatile uint32_t g_badPackets   = 0;
 
 // Обновляется в main loop, читается в ISR (для укладки в tx-буфер).
 static volatile uint16_t g_potRaw = 2048;
 static volatile int16_t  g_potVel = 0;
+static volatile int16_t  g_potVelHp = 0;      // HP-фильтрованная скорость вала (для damping и телеметрии)
 static volatile int16_t  g_omegaOut = 0;      // последняя команда мотору
 static volatile uint8_t  g_statusOut = 0;
 
@@ -226,6 +264,7 @@ static inline void spiFeedByte(uint8_t b) {
                     g_tdX1000      = le16s(&buf[13]);
                     g_potCenter    = le16u(&buf[15]);
                     g_kdPotX1000   = le16s(&buf[17]);
+                    g_kickX1000    = le16s(&buf[19]);
                     g_goodPackets++;
                 } else {
                     g_badPackets++;
@@ -328,8 +367,18 @@ static void samplePot(void) {
     if (emaVel >  32767) emaVel =  32767;
     if (emaVel < -32768) emaVel = -32768;
 
-    g_potRaw = emaRaw;
-    g_potVel = (int16_t)emaVel;
+    // Медленный LPF для HP-фильтрации. lpfVel следует за emaVel с τ~32мс.
+    // HP = emaVel − lpfVel: содержит только «быстрые» компоненты (звон,
+    // резонанс) без вклада полезной скорости отслеживания на 1-2 Гц.
+    static int32_t lpfVel = 0;
+    lpfVel = (lpfVel * VEL_LPF_B + emaVel * VEL_LPF_A) / (VEL_LPF_A + VEL_LPF_B);
+    int32_t hpVel = emaVel - lpfVel;
+    if (hpVel >  32767) hpVel =  32767;
+    if (hpVel < -32768) hpVel = -32768;
+
+    g_potRaw   = emaRaw;
+    g_potVel   = (int16_t)emaVel;
+    g_potVelHp = (int16_t)hpVel;
 }
 
 // Собрать 20-байтовый ответ для MISO. Вызывается в main loop; ISR сам
@@ -339,6 +388,7 @@ static void buildTxFrame(void) {
     noInterrupts();
     const uint16_t potRaw    = g_potRaw;
     const int16_t  potVel    = g_potVel;
+    const int16_t  potVelHp  = g_potVelHp;
     const int16_t  omegaOut  = g_omegaOut;
     const uint32_t good      = g_goodPackets;
     const uint32_t bad       = g_badPackets;
@@ -365,6 +415,8 @@ static void buildTxFrame(void) {
     local[16] = status;
     local[17] = 0;
     local[18] = 0;
+    local[19] = (uint8_t)((uint16_t)potVelHp & 0xFF);
+    local[20] = (uint8_t)(((uint16_t)potVelHp >> 8) & 0xFF);
     uint8_t cs = 0;
     for (uint8_t i = 0; i < SPI_PKT_LEN - 1; ++i) cs ^= local[i];
     local[SPI_PKT_LEN - 1] = cs;
@@ -399,10 +451,11 @@ void setup() {
 
     Serial.begin(115200);
     Serial.println();
-    Serial.println(F("[nucleo-f103rb] SPI drive controller w/ pot feedback (Step 3.2)"));
+    Serial.println(F("[nucleo-f103rb] SPI drive controller w/ pot feedback (Step 3.3)"));
     Serial.println(F("  SPI2 slave: MOSI=PB15 MISO=PB14 SCK=PB13 NSS=PB12 (CN10)"));
     Serial.println(F("  pot input:  A0=PA0 (ADC1_IN0, 12-bit)"));
-    Serial.println(F("  ожидаю 20-байтовые пакеты от Pi (spidev0.0) ..."));
+    Serial.println(F("  law: PD (camera) + HP-damping (shaft) + anti-stiction kick"));
+    Serial.println(F("  ожидаю 22-байтовые пакеты от Pi (spidev0.0) ..."));
 
     spiSlaveBegin();
 }
@@ -438,30 +491,76 @@ static void runStepper(bool active, int16_t omega) {
     }
 }
 
-// PD-закон с опциональной velocity-обратной связью от вала.
-//   drive = clamp((err_n + Td·derr_n_cam - Kd_pot·pot_vel_n) · Kp, ±1)
-//   omega = drive · max_omega
-// Направление вклада pot_vel задаётся знаком Kd_pot (если ремень «в другую
-// сторону» — просто ставим отрицательный Kd_pot в UI).
+// PD-закон + HP-фильтр демпфер вала + anti-stiction кик.
+//   drive_base = (err_n + Td·derr_n_cam) · Kp
+//   drive_damp = -Kd_pot · pot_vel_hp_n     // HP гасит РЕЗОНАНС, не отслеживание
+//   drive_kick = kick_bias · sign(err)      // если |err|>ε и |pot_vel|≈0
+//   omega      = clamp(drive_base + drive_damp + drive_kick, ±1) · max_omega
+//
+// Ключевое отличие от предыдущей версии Step 3.2: Kd_pot действует на
+// ВЫСОКОЧАСТОТНУЮ часть скорости (>~5Гц), не на всю. Медленное движение
+// вала за мячом (0.1-2Гц) не тормозится. Раньше был баг: pot_vel имел
+// тот же знак, что err (полезное движение), и Kd_pot тормозил его как
+// «нежелательное» — потому увеличение Kd_pot делало систему хуже.
+//
+// Anti-stiction: даёт минимальный «толчок» вращения когда камера видит
+// смещение мяча, а вал стоит из-за трения покоя. Пороги фиксированы,
+// амплитуда через SPI (kick_bias). При kick_bias=0 — код не выполняется.
 static int16_t computeOmega(bool manualActive, bool tracking,
                             int16_t manualOmega,
                             int16_t errN, int16_t derrN,
                             int16_t kpX100, int16_t maxOmega, int16_t tdX1000,
-                            int16_t kdPotX1000, int16_t potVel) {
+                            int16_t kdPotX1000, int16_t kickX1000,
+                            int16_t potVel, int16_t potVelHp,
+                            bool* kickFiredOut) {
+    if (kickFiredOut) *kickFiredOut = false;
     if (manualActive) {
         return manualOmega;
     }
     if (!tracking) {
         return 0;
     }
-    const float err     = (float)errN   / ERR_N_SCALE;
-    const float derr    = (float)derrN  / DERR_N_SCALE;
-    const float kp      = (float)kpX100 / KP_SCALE;
-    const float td      = (float)tdX1000 / TD_SCALE;
-    const float kdPot   = (float)kdPotX1000 / KD_POT_SCALE;
-    const float potVelN = (float)potVel / POT_VEL_NORM;
+    const float err       = (float)errN     / ERR_N_SCALE;
+    const float derr      = (float)derrN    / DERR_N_SCALE;
+    const float kp        = (float)kpX100   / KP_SCALE;
+    const float td        = (float)tdX1000  / TD_SCALE;
+    const float kdPot     = (float)kdPotX1000 / KD_POT_SCALE;
+    const float kickBias  = (float)kickX1000  / KICK_SCALE;
+    const float potVelN   = (float)potVel   / POT_VEL_NORM;
+    const float potVelHpN = (float)potVelHp / POT_VEL_NORM;
 
-    float drive = (err + td * derr - kdPot * potVelN) * kp;
+    // PD от камеры + HP-демпфер вала.
+    float drive = (err + td * derr) * kp - kdPot * potVelHpN;
+
+    // Anti-stiction / dead-zone eliminator с ГИСТЕРЕЗИСОМ.
+    // Схема Schmitt-trigger по знаку err:
+    //   state = 0 (idle):  |err| > HI  и err>0  → state=+1
+    //                      |err| > HI  и err<0  → state=-1
+    //   state ≠ 0 (active): |err| < LO           → state=0 (цель поймана)
+    // При активном state добавляем kick_bias · state к drive. Гистерезис
+    // не даёт возникнуть лимит-циклу вокруг err=0 из-за дискретности
+    // степпера: как только шафт «зацепил» цель (|err|<LO), kick
+    // выключается и остаётся в 0, пока новое заметное возмущение (>HI)
+    // не потребует снова компенсировать дед-зону.
+    (void)potVelN;  // условие на pot_vel убрано в Step 3.3-b
+    static int8_t kickState = 0;   // персистентно между вызовами
+    if (kickBias > 0.0f) {
+        if (kickState == 0) {
+            if (err >  KICK_ERR_HI) kickState = +1;
+            if (err < -KICK_ERR_HI) kickState = -1;
+        } else {
+            if (fabsf(err) < KICK_ERR_LO) kickState = 0;
+            // ЗНАК kick не меняется пока |err|>=LO — иначе стереть смысл
+            // гистерезиса; вернём kick только через zero-crossing < LO.
+        }
+        if (kickState != 0) {
+            drive += (kickState > 0 ? kickBias : -kickBias);
+            if (kickFiredOut) *kickFiredOut = true;
+        }
+    } else {
+        kickState = 0;  // отключено в UI — сброс состояния
+    }
+
     if (drive >  1.0f) drive =  1.0f;
     if (drive < -1.0f) drive = -1.0f;
 
@@ -483,13 +582,17 @@ void loop() {
     const int16_t  maxOmega     = g_maxOmega;
     const int16_t  tdX1000      = g_tdX1000;
     const int16_t  kdPotX1000   = g_kdPotX1000;
+    const int16_t  kickX1000    = g_kickX1000;
     const int16_t  potVel       = g_potVel;
+    const int16_t  potVelHp     = g_potVelHp;
     const uint16_t potRawLocal  = g_potRaw;
     interrupts();
 
+    bool kickFired = false;
     const int16_t omega  = computeOmega(manualActive, tracking, manualOmega,
                                         errN, derrN, kpX100, maxOmega, tdX1000,
-                                        kdPotX1000, potVel);
+                                        kdPotX1000, kickX1000, potVel, potVelHp,
+                                        &kickFired);
     const bool    active = (manualActive || tracking) && (omega != 0);
 
     runStepper(active, omega);
@@ -499,6 +602,7 @@ void loop() {
     if (manualActive) st |= 0x01;
     if (tracking)     st |= 0x02;
     if (active)       st |= 0x04;
+    if (kickFired)    st |= 0x08;
     g_omegaOut  = omega;
     g_statusOut = st;
 

@@ -444,7 +444,7 @@ class Stm32SpiHandler:
     SYNC1 = 0x55
     RESP_SYNC0 = 0xBB
     RESP_SYNC1 = 0x66
-    PKT_LEN = 20
+    PKT_LEN = 22            # bumped 20 → 22 in Step 3.3 (added kick_bias + pot_vel_hp)
     OMEGA_LIMIT = 200       # matches the firmware/legacy err_raw clamp
     ERR_N_SCALE = 10000.0   # err_n  int16  → [-1.0, +1.0]
     DERR_N_SCALE = 1000.0   # derr_n int16  → per-second
@@ -452,6 +452,7 @@ class Stm32SpiHandler:
     KP_SCALE = 100.0
     TD_SCALE = 1000.0
     KD_POT_SCALE = 1000.0   # kd_pot int16 → user float
+    KICK_SCALE = 1000.0     # kick_bias int16 → normalized ±1
     POT_MAX = 4095          # 12-bit ADC full-scale on F103
     INT16_LIMIT = 32767
 
@@ -465,8 +466,10 @@ class Stm32SpiHandler:
         # corrupt, so UI code can always read them safely.
         self.pot_raw: int = 0
         self.pot_vel: int = 0
+        self.pot_vel_hp: int = 0     # HP-фильтр. скорость вала (то, что реально
+                                     # гасит Kd_pot; полезно для диагностики).
         self.omega_out: int = 0
-        self.status_flags: int = 0
+        self.status_flags: int = 0   # bit3 = kick fired last cycle (anti-stiction)
         self.good_packets: int = 0
         self.bad_packets: int = 0
         self.resp_ok: bool = False   # last response frame parsed cleanly
@@ -513,10 +516,13 @@ class Stm32SpiHandler:
     def _build_packet(self, *, manual_active: bool, tracking: bool,
                       manual_omega: float, err_n: float, derr_n: float,
                       kp: float, max_omega: float, td: float,
-                      pot_center: int, kd_pot: float) -> list[int]:
-        """Pack the 20-byte control frame. Normalised inputs are already in
+                      pot_center: int, kd_pot: float,
+                      kick_bias: float = 0.0) -> list[int]:
+        """Pack the 22-byte control frame. Normalised inputs are already in
         ±1 units (err_n) or per-second (derr_n); everything is fixed-point
-        int16 LE apart from pot_center (uint16)."""
+        int16 LE apart from pot_center (uint16). Step 3.3 добавил
+        `kick_bias` (anti-stiction), Kd_pot теперь применяется к HP-
+        фильтрованной скорости вала на прошивке."""
         flags = (0x01 if manual_active else 0x00) | (0x02 if tracking else 0x00)
         body = [self.SYNC0, self.SYNC1, flags]
         body += list(struct.pack("<h", self._i16(
@@ -531,15 +537,20 @@ class Stm32SpiHandler:
         pc = max(0, min(0xFFFF, int(pot_center)))
         body += list(struct.pack("<H", pc))
         body += list(struct.pack("<h", self._i16(kd_pot * self.KD_POT_SCALE)))
+        # Kick bias — anti-stiction: пробивает трение покоя когда мяч
+        # уже сместился, а вал стоит. Клампим до [0, 0.5] ×1000 = 500.
+        body += list(struct.pack("<h", self._i16(
+            max(0.0, min(0.5, kick_bias)) * self.KICK_SCALE)))
         checksum = 0
         for b in body:
             checksum ^= b
         return body + [checksum & 0xFF]
 
     def _parse_response(self, resp) -> bool:
-        """Validate + decode the 20-byte MISO frame. Populates public
+        """Validate + decode the 22-byte MISO frame. Populates public
         attributes; returns True on success. Silently ignores bad frames
-        (the caller's cached last-good values remain unchanged then)."""
+        (the caller's cached last-good values remain unchanged then).
+        Байты [19..20] в Step 3.3 = pot_vel_hp (HP-фильтр. скорость)."""
         if resp is None or len(resp) < self.PKT_LEN:
             return False
         buf = bytes(resp[:self.PKT_LEN])
@@ -556,9 +567,12 @@ class Stm32SpiHandler:
         self.good_packets = int.from_bytes(buf[8:12], "little", signed=False)
         self.bad_packets = int.from_bytes(buf[12:16], "little", signed=False)
         self.status_flags = buf[16]
+        # buf[17..18] = reserved (0)
+        self.pot_vel_hp = int.from_bytes(buf[19:21], "little", signed=True)
         return True
 
-    def send_state(self, store, nx: float, dnx: float, half_width: float) -> None:
+    def send_state(self, store, nx: float, dnx: float, half_width: float,
+                   frame_age_s: float = 0.0) -> None:
         """Push one control frame and read back telemetry (full-duplex).
 
         Called every logic-thread iteration. The 20-byte transfer at 500 kHz
@@ -569,6 +583,14 @@ class Stm32SpiHandler:
         detector; `half_width` = frame_width/2. We normalise here so the
         firmware law stays resolution-independent.
 
+        `frame_age_s` — сколько секунд прошло от cap.read() до этого вызова
+        (главный вклад в pipeline latency). При store.predict_gain > 0
+        компенсируем возраст линейной экстраполяцией:
+            err_predicted = err_n + derr_n · frame_age_s · predict_gain
+        и STM32 получает «свежую» ошибку — так снимаем те 15–25 мс, что
+        видели на осциллографе. При predict_gain=0 поведение точно как
+        раньше (шлём сырое err_n).
+
         Response bytes shifted in on MISO are parsed into `pot_raw`,
         `pot_vel`, `omega_out` etc. — the UI reads them for the SHAFT
         FEEDBACK display.
@@ -578,6 +600,27 @@ class Stm32SpiHandler:
         hw = half_width if half_width > 1.0 else 1.0
         err_n = nx / hw
         derr_n = dnx / hw
+
+        # Forward-prediction (Pi-side). Пусть kd — весовой коэффициент 0..1
+        # из UI: сколько «своего Δt» мы верим и подмешиваем. 0 = легаси.
+        # Обычно частичный gain (0.5-0.8) даёт лучше картину, чем полный —
+        # т.к. derr_n сам по себе шумный (пиксельная дискретизация), а
+        # реальный возраст кадра ещё больше нашего perf_counter-таймстемпа
+        # на USB-buffering. Опыт покажет.
+        predict_gain = float(getattr(store, "predict_gain", 0.0))
+        # Общий Δt = замеренный возраст + ручной оффсет неизмеряемого куска
+        # (USB-буферизация MJPEG + JPEG-декодер, вне видимости perf_counter).
+        latency_offset_s = float(getattr(store, "latency_offset_ms", 0.0)) * 0.001
+        effective_dt = frame_age_s + latency_offset_s
+        if predict_gain > 0.0 and effective_dt > 0.0:
+            err_n = err_n + derr_n * effective_dt * predict_gain
+        # Публикуем то, что реально отправляем в STM32, в пикселях —
+        # UI рисует зелёной линией на графике X-delta, чтобы видно было
+        # реальный эффект предиктора.
+        try:
+            store.predict_err_px = float(err_n * hw)
+        except Exception:
+            pass
         pkt = self._build_packet(
             manual_active=bool(getattr(store, "manual_omega_active", False)),
             tracking=bool(getattr(store, "is_tracking", False)),
@@ -589,6 +632,7 @@ class Stm32SpiHandler:
             td=float(getattr(store, "td", 0.0)),
             pot_center=int(getattr(store, "pot_center", self.POT_MAX // 2)),
             kd_pot=float(getattr(store, "kd_pot", 0.0)),
+            kick_bias=float(getattr(store, "kick_bias", 0.0)),
         )
         try:
             resp = self.spi.xfer2(pkt)
@@ -603,7 +647,8 @@ class Stm32SpiHandler:
                 self.spi.xfer2(self._build_packet(
                     manual_active=False, tracking=False, manual_omega=0.0,
                     err_n=0.0, derr_n=0.0, kp=0.0, max_omega=0.0, td=0.0,
-                    pot_center=self.POT_MAX // 2, kd_pot=0.0))
+                    pot_center=self.POT_MAX // 2, kd_pot=0.0,
+                    kick_bias=0.0))
             except Exception:
                 pass
             try:

@@ -141,9 +141,47 @@ class ConfigStore:
         # `pot_raw`/`pot_vel` — только текущее значение с STM32; не
         # сохраняем, но живут в store, чтобы UI читал в одном месте.
         self.pot_center = 2048       # мидпоинт 12-битного ADC
-        self.kd_pot = 0.0
+        self.kd_pot = 0.0            # Step 3.3: применяется к HP-фильтр. pot_vel
+        # Anti-stiction «толчок»: минимальный нормированный drive, добавляемый
+        # к команде когда |err|>KICK_ERR_THR (в прошивке ≈0.02 ≈ 6 px), а
+        # вал стоит на месте (|pot_vel|<KICK_VEL_THR). Пробивает трение
+        # покоя на медленных движениях мяча — там где иначе виден stick-slip
+        # («coh_nx=0.3»). Типичные значения 0.03-0.10; при 0.0 функция
+        # отключена и поведение точно как без кика.
+        self.kick_bias = 0.0
         self.pot_raw = 0             # runtime-only (см. exclude ниже)
         self.pot_vel = 0             # runtime-only
+
+        # Forward-prediction: компенсация возраста кадра. Pi замеряет
+        # perf_counter() при cap.read() и знает Δt = «сколько прошло от
+        # захвата до отправки в STM32». В hardware.send_state добавляем
+        # err_predicted = err_n + derr_n * Δt * predict_gain — и STM32
+        # получает уже «свежую» ошибку. predict_gain=0 → выключено (легаси),
+        # 1 → полная линейная экстраполяция. Обычно достаточно 0.5-0.8, т.к.
+        # реальный возраст кадра больше нашего perf_counter-таймстемпа на
+        # неизвестное фиксированное USB-buffering-время; ползунок это
+        # компенсирует эмпирически.
+        self.predict_gain = 0.0
+        # Ручной оффсет: сколько миллисекунд USB-буферизации + JPEG-декодера
+        # съедается ДО того, как cap.read() отдал кадр в capture-тред. Нашим
+        # `perf_counter`-таймстемпом это НЕ ловится (frame_ts ставится уже
+        # после возврата из V4L2). Формула становится:
+        #   effective_age = frame_age_s + latency_offset_ms/1000
+        # На 120 fps + BUFFERSIZE=4 типичное значение 15-30 мс. Калибруется
+        # эмпирически по графику: увеличиваешь offset, пока красная (pot)
+        # и синяя (nx) линии не совпадут при быстром движении.
+        self.latency_offset_ms = 0.0
+        self.frame_age_us = 0        # runtime-only
+
+        # Калибровка пикселей на raw-счёт потенциометра. Публикуется в
+        # store.pot_px для отрисовки красной линии на графике X-delta.
+        # Дефолт 0.1 → полный swing 4095 counts ≈ 410 px, что близко к
+        # half_width=320. Подгоняется под конкретную механику ремня.
+        self.pot_px_per_count = 0.1
+        self.pot_px = 0.0            # runtime-only
+        # Что реально ушло в STM32 после forward-prediction, в пикселях —
+        # чтобы UI показал зелёной линией и видно было работу предиктора.
+        self.predict_err_px = 0.0    # runtime-only
 
         # Привязка USB-UVC камеры на macOS (используется uvc-util для управления
         # экспозицией). Если камер UVC несколько — задайте либо часть имени
@@ -188,7 +226,8 @@ class ConfigStore:
             "manual_omega_active",
             # Runtime-only shaft telemetry (обновляется каждый кадр из
             # SPI-ответа STM32 — сохранять его в файл бессмысленно).
-            "pot_raw", "pot_vel",
+            "pot_raw", "pot_vel", "frame_age_us",
+            "pot_px", "predict_err_px",
         }
         data = {
             k: v for k, v in self.__dict__.items()

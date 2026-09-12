@@ -279,12 +279,18 @@ SPI1 на Nucleo занят: `SPI1_SCK = PA5` — это онбордовый LE
 * **Мягкие концевые ограничители** на основе `pot_center ± pot_limit_soft/
   pot_limit_hard`: `pot_center` уже уходит в прошивку каждым пакетом, но
   прошивка его пока игнорирует. Добавить проверку в `computeOmega`.
-* **Forward-prediction в законе управления.** Раз STROBE-выход камеры
-  оказался бесполезным, оценивать возраст кадра можно на стороне Pi
-  (timestamp `cap.read()` минус фиксированный оффсет USB-буферизации) и
-  передавать `frame_age_us` в SPI-пакете туда. Дальше в `computeOmega`:
-  `err_pred = err + derr · frame_age_s`. Требует калибровки оффсета, но
-  бесплатно по железу.
+* **Forward-prediction на стороне Pi (сделано).** Раз STROBE-выход камеры
+  оказался бесполезным, возраст кадра теперь замеряется программно:
+  `VideoStream.frame_ts = perf_counter()` в момент успешного `cap.read()`,
+  logic-тред пробрасывает Δt в `Stm32SpiHandler.send_state(..., frame_age_s)`,
+  а тот шлёт STM32 уже предсказанную ошибку
+  `err_pred = err_n + derr_n · frame_age_s · predict_gain`.
+  Протокол SPI не менялся — вся математика на Python. UI: в секции SHAFT
+  FEEDBACK показывается `Frame age: X.X ms` и ползунок `Predict gain`
+  (0..2, 0 = легаси). Реальный возраст кадра больше нашего `perf_counter`-
+  таймстемпа на неизвестное USB-buffering-время (~1-4 кадра при
+  `BUFFERSIZE=4`), поэтому эффективный коэффициент калибруется вручную по
+  осциллографу.
 * **HardwareTimer @1 кГц на TIM3_CH2** для velocity ramp вместо bit-bang в
   `loop()` — нужно для высоких частот шага и плавного разгона (`accel`),
   который в легаси был, но отключён.

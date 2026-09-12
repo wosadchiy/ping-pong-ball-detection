@@ -37,7 +37,8 @@ DEFAULT_CAPTURE_H = 480
 DEFAULT_CAPTURE_FPS = 120  # Pi targets 120 with MJPEG; macOS/Win simply ignore if camera caps out
 
 
-def _try_set_mjpeg_pipeline(cap, width: int, height: int, fps: int) -> None:
+def _try_set_mjpeg_pipeline(cap, width: int, height: int, fps: int,
+                             buffer_size: int = 4) -> None:
     """On Linux/V4L2, ask the camera for MJPEG + size + framerate.
 
     Order matters with V4L2: fourcc must be set BEFORE width/height, otherwise
@@ -68,7 +69,14 @@ def _try_set_mjpeg_pipeline(cap, width: int, height: int, fps: int) -> None:
         # Was 1 (latest-wins). On Pi 4 that capped MJPEG at 60 fps because
         # BGR conversion + numpy alloc in cap.read() (~10 ms) didn't fit
         # into the 8.3 ms frame interval — driver kept overwriting.
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
+        # 4 (default) даёт стабильные 120 fps, но встроенный «возраст»
+        # кадра ≈ (buffer-1)/fps = 25 мс на 120 fps. Для управляющей
+        # системы задержка убийственная — можно уменьшать через
+        # --cam-buffer 1 или 2, ценой возможного падения FPS.
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, int(buffer_size))
+        print(f"[camera] V4L2 BUFFERSIZE={buffer_size} "
+              f"(expected extra latency ~{max(0, buffer_size-1)}·1/fps = "
+              f"{max(0, buffer_size-1)*1000/max(1,fps):.1f} ms)")
     except cv2.error:
         pass
 
@@ -204,6 +212,7 @@ class VideoStream:
         width: int = DEFAULT_CAPTURE_W,
         height: int = DEFAULT_CAPTURE_H,
         fps: int = DEFAULT_CAPTURE_FPS,
+        buffer_size: int = 4,
     ):
         global _UVC_WARNED
         self.store = store
@@ -216,7 +225,7 @@ class VideoStream:
         # Linux path: MJPEG-first, latest-wins buffer, target 120 FPS. On the
         # Pi this is what unlocks high FPS — YUYV at 640x480 saturates USB 2.0
         # well before 60 FPS, MJPEG decodes via libjpeg-turbo + NEON in <2 ms.
-        _try_set_mjpeg_pipeline(self.cap, width, height, fps)
+        _try_set_mjpeg_pipeline(self.cap, width, height, fps, buffer_size)
 
         # Fallback / non-Linux size set. Harmless if MJPEG path already set it.
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
@@ -272,6 +281,11 @@ class VideoStream:
         self.apply_hw_settings()
 
         self.grabbed, self.frame = self.cap.read()
+        # perf_counter timestamp of the most recent successful cap.read().
+        # Used by the logic thread to compute frame_age (Δt since capture) for
+        # forward-prediction of the ball position on Pi side. `perf_counter`
+        # is monotonic and sub-µs accurate — plenty for millisecond ages.
+        self.frame_ts: float = time.perf_counter()
         self.started = False
         self.thread = None
 
@@ -333,9 +347,16 @@ class VideoStream:
 
             grabbed, frame = self.cap.read()
             if grabbed:
+                now = time.perf_counter()
+                # Публикуем таймстемп В ТОТ ЖЕ момент, что и кадр. Порядок
+                # присваиваний важен: сначала frame_ts, затем frame — logic
+                # тред читает frame_ts после того, как увидел новый ndarray
+                # через identity gate, так что не может увидеть «старый ts
+                # + новый frame».  Обратный порядок даст ложно завышенный
+                # возраст на ~одну итерацию.
+                self.frame_ts = now
                 self.frame = frame
                 frames_in_window += 1
-                now = time.perf_counter()
                 elapsed = now - window_start
                 if elapsed >= 1.0:
                     self.cam_fps = frames_in_window / elapsed
@@ -349,6 +370,17 @@ class VideoStream:
 
     def read(self):
         return self.frame
+
+    def read_with_ts(self) -> tuple:
+        """Return (frame, capture_ts) atomically enough for our purposes.
+
+        Порядок обращения: сначала frame (это то, что гейтит logic-тред), потом
+        frame_ts. capture_ts на 1 итерацию раньше самого кадра быть НЕ может
+        (см. порядок присваивания в update()), а «на 1 позже» ловится тем,
+        что мы делаем identity-gate по frame. Точность миллисекундная, для
+        forward-prediction на 10-30 мс — с большим запасом.
+        """
+        return self.frame, self.frame_ts
 
     def stop(self):
         self.started = False

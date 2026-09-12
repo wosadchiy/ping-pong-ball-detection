@@ -74,13 +74,14 @@ SYNC0 = 0xAA
 SYNC1 = 0x55
 RESP_SYNC0 = 0xBB
 RESP_SYNC1 = 0x66
-PKT_LEN = 20
+PKT_LEN = 22    # Step 3.3: расширили на kick_bias (req) + pot_vel_hp (resp)
 OMEGA_LIMIT = 200  # совпадает с клампом в прошивке/легаси
 ERR_N_SCALE = 10000.0
 DERR_N_SCALE = 1000.0
 KP_SCALE = 100.0
 TD_SCALE = 1000.0
 KD_POT_SCALE = 1000.0
+KICK_SCALE = 1000.0
 INT16_LIMIT = 32767
 
 
@@ -92,8 +93,9 @@ def _i16(v: float) -> int:
 def build_packet(manual_active: bool, omega: float, *, tracking: bool = False,
                  err_n: float = 0.0, derr_n: float = 0.0, kp: float = 1.0,
                  max_omega: float = 40.0, td: float = 0.0,
-                 pot_center: int = 2048, kd_pot: float = 0.0) -> list[int]:
-    """Собрать 20-байтовый control-кадр (см. модульный docstring)."""
+                 pot_center: int = 2048, kd_pot: float = 0.0,
+                 kick_bias: float = 0.0) -> list[int]:
+    """Собрать 22-байтовый control-кадр (Step 3.3). См. модульный docstring."""
     o = max(-OMEGA_LIMIT, min(OMEGA_LIMIT, int(round(omega))))
     flags = (0x01 if manual_active else 0x00) | (0x02 if tracking else 0x00)
     body = [SYNC0, SYNC1, flags]
@@ -105,6 +107,7 @@ def build_packet(manual_active: bool, omega: float, *, tracking: bool = False,
     body += list(struct.pack("<h", _i16(td * TD_SCALE)))
     body += list(struct.pack("<H", max(0, min(0xFFFF, int(pot_center)))))
     body += list(struct.pack("<h", _i16(kd_pot * KD_POT_SCALE)))
+    body += list(struct.pack("<h", _i16(max(0.0, min(0.5, kick_bias)) * KICK_SCALE)))
     checksum = 0
     for b in body:
         checksum ^= b
@@ -132,6 +135,8 @@ def parse_response(resp: list[int]) -> dict | None:
         "good":         int.from_bytes(buf[8:12], "little", signed=False),
         "bad":          int.from_bytes(buf[12:16], "little", signed=False),
         "status":       buf[16],
+        # buf[17..18] reserved
+        "pot_vel_hp":   int.from_bytes(buf[19:21], "little", signed=True),
     }
 
 
@@ -317,7 +322,8 @@ def _self_test() -> None:
         dict(manual_active=False, omega=0, tracking=True, err_n=0.5, kp=1.0,
              max_omega=60, td=0.0),
         dict(manual_active=False, omega=0, tracking=True, err_n=-0.3,
-             kp=2.5, max_omega=100, td=0.05, pot_center=1700, kd_pot=-0.4),
+             kp=2.5, max_omega=100, td=0.05, pot_center=1700, kd_pot=-0.4,
+             kick_bias=0.05),
     ]
     for kw in cases:
         p = build_packet(kw.pop("manual_active"), kw.pop("omega"), **kw)
@@ -330,10 +336,11 @@ def _self_test() -> None:
         _ = _struct.unpack("<h", bytes(p[3:5]))[0]
 
     # Sanity check for response parser: pot=2048, omega=32, pvel=1000,
-    # good=10, bad=0, status=driving+tracking, reserved=0.
+    # good=10, bad=0, status=driving+tracking, reserved=0, pot_vel_hp=-500.
+    # Step 3.3 добавил pot_vel_hp в байты [19..20].
     frame = [RESP_SYNC0, RESP_SYNC1, 0x00, 0x08, 0x20, 0x00, 0xE8, 0x03,
              0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06,
-             0x00, 0x00]
+             0x00, 0x00, 0x0C, 0xFE]   # -500 LE = 0x0C 0xFE (0xFE0C = -500)
     cs = 0
     for b in frame:
         cs ^= b
@@ -344,6 +351,7 @@ def _self_test() -> None:
     assert parsed["omega_out"] == 32, parsed
     assert parsed["pot_vel"] == 1000, parsed
     assert parsed["good"] == 10, parsed
+    assert parsed["pot_vel_hp"] == -500, parsed
     print(f"self-test OK: {PKT_LEN}-byte request+response packets, checksums valid")
 
 

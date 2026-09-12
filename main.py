@@ -42,6 +42,7 @@ from hardware import ArduinoHandler, Stm32SpiHandler
 from detector import BallDetector
 from platform_utils import IS_MACOS, IS_RPI, apply_pi_tuning
 from recorder import Recorder
+import plot_recorder
 from ui import create_ui, update_texture
 from utils import ema
 
@@ -81,7 +82,11 @@ def logic_thread_func(store, detector, arduino, vs_container, recorder, spi=None
     yield_sleep = 0.0005  # 0.5 ms — tight enough to never miss a frame, loose enough not to spin
     while shared.running:
         vs = vs_container[0]
-        frame = vs.read()
+        # Забираем кадр вместе с таймстемпом захвата — нужен для
+        # forward-prediction в SPI.send_state. capture_ts берётся из
+        # capture-треда сразу после cap.read(); дальнейший возраст = perf −
+        # capture_ts, включает в себя detector.process + возможный I/O.
+        frame, capture_ts = vs.read_with_ts()
         if frame is None or frame is last_frame_id:
             time.sleep(yield_sleep)
             continue
@@ -97,7 +102,9 @@ def logic_thread_func(store, detector, arduino, vs_container, recorder, spi=None
         # the legacy UART path above; no-op if SPI is unavailable.
         if spi is not None:
             half_width = (res_frame.shape[1] / 2.0) if res_frame is not None else 1.0
-            spi.send_state(store, float(data[2]), float(data[4]), half_width)
+            frame_age_s = max(0.0, time.perf_counter() - capture_ts)
+            spi.send_state(store, float(data[2]), float(data[4]), half_width,
+                           frame_age_s=frame_age_s)
             # Пробрасываем shaft-телеметрию с STM32 в store — так UI
             # (render-тред) читает pot_raw/pot_vel из единого места, не
             # трогая spi-хендлер напрямую. При падении ответа держим
@@ -105,6 +112,16 @@ def logic_thread_func(store, detector, arduino, vs_container, recorder, spi=None
             if spi.resp_ok:
                 store.pot_raw = int(spi.pot_raw)
                 store.pot_vel = int(spi.pot_vel)
+                # Нормализуем шафт-фидбек в пиксели, чтобы UI рисовал его
+                # красной линией на общем графике с nx. Единый коэффициент
+                # px-per-count калибруется вручную в UI: двигаешь механику
+                # так, чтобы красная линия совпадала с синей при статике.
+                store.pot_px = (int(spi.pot_raw) - int(store.pot_center)) \
+                               * float(store.pot_px_per_count)
+            # Возраст кадра — независимо от статуса SPI-ответа, это чисто
+            # Pi-side измерение. Кламп до uint32-безопасного значения на
+            # случай долгой заминки (>1 c). UI покажет в мс.
+            store.frame_age_us = int(min(frame_age_s * 1_000_000.0, 3_600_000_000))
         # ADuC OFF — было: aduc.send_dx_dy(data[2], data[3])
         # (зеркалирование nx,ny на DAC0/DAC1 для замера latency)
         t_now = time.perf_counter()
@@ -153,6 +170,19 @@ def _parse_args():
         type=int,
         default=DEFAULT_CAPTURE_FPS,
         help=f"Запрашиваемый FPS у камеры (default {DEFAULT_CAPTURE_FPS}).",
+    )
+    parser.add_argument(
+        "--cam-buffer",
+        type=int,
+        default=4,
+        help=(
+            "V4L2 CAP_PROP_BUFFERSIZE. Trade-off latency ↔ sustained FPS: "
+            "4 (default) — драйвер копит до 4 кадров, camera FPS 120, но "
+            "«возраст кадра» в момент cap.read ~4·1/fps ≈ 33 мс. "
+            "1 — минимальная задержка (~1/fps), но на Pi 4 может уронить "
+            "FPS до ~60 при MJPEG@640×480 если logic-тред тормозит. "
+            "2 — компромисс: latency ~16 мс, FPS почти как при 4."
+        ),
     )
     parser.add_argument(
         "--ui-fps",
@@ -210,6 +240,7 @@ def run_headless(args, store, arduino, detector, *, capture_w: int, capture_h: i
         width=capture_w,
         height=capture_h,
         fps=args.cam_fps,
+        buffer_size=args.cam_buffer,
     ).start()
     recorder = Recorder()
 
@@ -312,6 +343,7 @@ def main():
         width=capture_w,
         height=capture_h,
         fps=args.cam_fps,
+        buffer_size=args.cam_buffer,
     ).start()
     vs_container = [vs]
 
@@ -362,6 +394,7 @@ def main():
                 width=capture_w,
                 height=capture_h,
                 fps=args.cam_fps,
+                buffer_size=args.cam_buffer,
             ).start()
             store.cam_id_changed = False
             store.save_to_json()
@@ -429,6 +462,45 @@ def main():
                 if getattr(spi, 'enabled', False)
                 else "SPI: disabled"
             )
+            # Kick indicator: bit3 of status_flags — прошивка сигналит,
+            # что anti-stiction импульс сейчас применяется. Мигает при
+            # активной работе на медленных движениях.
+            _st = int(getattr(spi, 'status_flags', 0))
+            _kick_on = bool(_st & 0x08)
+            dpg.set_value(
+                "ui_kick_status",
+                "Kick: FIRING" if _kick_on else "Kick: idle"
+            )
+            dpg.configure_item(
+                "ui_kick_status",
+                color=[100, 220, 120] if _kick_on else [160, 160, 160],
+            )
+            # HP-фильтр. скорость вала — то, что реально гасит Kd_pot.
+            _pvhp = int(getattr(spi, 'pot_vel_hp', 0))
+            dpg.set_value("ui_pot_vel_hp", f"Pot vel HP: {_pvhp:+d} u/s")
+            # Frame age — программный (perf_counter в logic-треде минус
+            # capture_ts из capture-треда). Показываем как индикатор pipeline
+            # latency, а также как база для forward-prediction (см.
+            # predict_gain ниже). USB-буферизацию мы измерить не можем;
+            # соответственно эта цифра — нижняя оценка реальной latency.
+            _age_us = int(getattr(store, 'frame_age_us', 0))
+            dpg.set_value("ui_frame_age", f"Frame age: {_age_us / 1000.0:.1f} ms")
+            # omega_out + флаг насыщения. Насыщение = |omega_out| ≥ 0.98·Max
+            # (2% зазор чтобы не мигало на округлении). Если так — привод
+            # физически не может отработать команду.
+            _omega = int(getattr(spi, 'omega_out', 0)) if spi is not None else 0
+            _max = max(1, int(store.max_omega))
+            _sat = "SAT!" if abs(_omega) >= int(_max * 0.98) else "-"
+            _sat_color = (255, 100, 100) if _sat == "SAT!" else (255, 220, 160)
+            dpg.set_value("ui_omega_out",
+                          f"Omega out: {_omega:+d} u  (max {_max}, sat: {_sat})")
+            dpg.configure_item("ui_omega_out", color=list(_sat_color))
+            # «Насколько предиктор реально сдвинул err» — разница между
+            # тем, что реально ушло в STM32, и сырым nx. Показывает, что
+            # прогнозирование работает (или что мы забыли включить gain).
+            _pred_delta = float(getattr(store, 'predict_err_px', current_nx)) - float(current_nx)
+            dpg.set_value("ui_predict_delta",
+                          f"Predict Δ: {_pred_delta:+.1f} px")
 
             # Recording status — refreshed on every frame; cheap (one stat()).
             rec_status = recorder.status()
@@ -472,16 +544,51 @@ def main():
             # rebuild the line series when a new sample was actually added.
             # The X-axis still slides every render frame so the curve appears
             # to scroll smoothly even between samples.
+            # Three channels overlaid:
+            #   nx (blue)          — сырое рассогласование от камеры
+            #   pot_px (red)       — обратная связь с вала, нормализованная
+            #                        в пиксели через pot_px_per_count
+            #   predict_err (green)— то, что РЕАЛЬНО ушло в STM32 после
+            #                        forward-prediction; равно nx при
+            #                        predict_gain=0
             now_rel = time.perf_counter() - plot_t0
             if now_rel - last_plot_sample >= plot_period:
-                plot_buf.append((now_rel, current_nx))
+                plot_buf.append((
+                    now_rel,
+                    current_nx,
+                    float(getattr(store, 'pot_px', 0.0)),
+                    float(getattr(store, 'predict_err_px', current_nx)),
+                ))
                 cutoff = now_rel - PLOT_WINDOW_SEC
                 while plot_buf and plot_buf[0][0] < cutoff:
                     plot_buf.popleft()
                 last_plot_sample = now_rel
                 xs = [p[0] for p in plot_buf]
-                ys = [p[1] for p in plot_buf]
-                dpg.set_value("plot_nx_series", [xs, ys])
+                ys_nx = [p[1] for p in plot_buf]
+                ys_pot = [p[2] for p in plot_buf]
+                ys_pred = [p[3] for p in plot_buf]
+                dpg.set_value("plot_nx_series", [xs, ys_nx])
+                dpg.set_value("plot_pot_series", [xs, ys_pot])
+                dpg.set_value("plot_pred_series", [xs, ys_pred])
+                # Пишем ту же выборку в plot-recorder, если запись активна.
+                # Тактируется теми же 60 Hz, что и plot_buf — гарантирует,
+                # что записанный ряд визуально идентичен экранному.
+                if plot_recorder.INSTANCE.active:
+                    plot_recorder.INSTANCE.append(
+                        t=now_rel,
+                        nx=float(current_nx),
+                        pot_px=float(getattr(store, 'pot_px', 0.0)),
+                        err_pred_px=float(getattr(store, 'predict_err_px',
+                                                   current_nx)),
+                        omega_out=int(getattr(spi, 'omega_out', 0))
+                                   if spi is not None else 0,
+                        pot_raw=int(getattr(store, 'pot_raw', 0)),
+                        pot_vel=int(getattr(store, 'pot_vel', 0)),
+                        frame_age_us=int(getattr(store, 'frame_age_us', 0)),
+                    )
+            # Статус записи обновляем каждый рендер-фрейм (не только на
+            # sample-tick), чтобы «Rec: 3.2s / 145 pts» плавно бежало.
+            dpg.set_value("rec_status", plot_recorder.INSTANCE.status_text())
             dpg.set_axis_limits(
                 "plot_x_axis", now_rel - PLOT_WINDOW_SEC, now_rel
             )

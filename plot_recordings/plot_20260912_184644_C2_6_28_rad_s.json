@@ -1,0 +1,20 @@
+{
+  "recorded_at": "20260912_184644",
+  "label": "C2_6_28_rad_s",
+  "duration_s": 15.128447013999903,
+  "sample_count": 228,
+  "sample_rate_hz_effective": 15.070945470411353,
+  "params": {
+    "kp": 1.5,
+    "td": 0.009999999776482582,
+    "max_omega": 120.0,
+    "accel": 200.0,
+    "kd_pot": 0.0,
+    "pot_center": 2037,
+    "pot_px_per_count": 0.38999998569488525,
+    "predict_gain": 1.5,
+    "latency_offset_ms": 60.0,
+    "manual_omega": 0.0,
+    "is_tracking": true
+  }
+}
